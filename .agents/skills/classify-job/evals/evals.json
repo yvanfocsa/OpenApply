@@ -1,0 +1,64 @@
+{
+  "skill": "classify-job",
+  "version": 2,
+  "cases": [
+    {
+      "id": "soc-alternance",
+      "input": "Alternance Analyste SOC. Supervision SIEM Splunk, EDR et réponse aux incidents.",
+      "expect": {
+        "family": "soc-csirt",
+        "contract": "alternance",
+        "tools": ["Splunk"]
+      }
+    },
+    {
+      "id": "grc-cdi",
+      "input": "CDI Consultant GRC. ISO 27001, EBIOS RM, NIS2 et gestion des risques.",
+      "expect": {
+        "family": "grc",
+        "contract": "cdi"
+      }
+    },
+    {
+      "id": "ambiguous-contract",
+      "input": "Notre équipe recrute en CDI et propose également une alternance en cybersécurité.",
+      "expect": {
+        "contract": "ambiguous"
+      }
+    },
+    {
+      "id": "manual-contract-wins",
+      "input": "Permanent security engineer position.",
+      "contractOverride": "alternance",
+      "expect": {
+        "contract": "alternance",
+        "contractConfidence": "manual"
+      }
+    },
+    {
+      "id": "unknown-no-invention",
+      "input": "Chargé de mission au sein d'une équipe transverse.",
+      "expect": {
+        "family": "other",
+        "tools": []
+      }
+    },
+    {
+      "id": "general-data-role",
+      "input": "CDI Data Analyst. Création de tableaux de bord Power BI et requêtes SQL.",
+      "expect": {
+        "family": "data-ai",
+        "contract": "cdi",
+        "tools": ["Power BI", "SQL"]
+      }
+    },
+    {
+      "id": "general-product-role",
+      "input": "Alternance Product Owner. Gestion de roadmap et animation des équipes produit.",
+      "expect": {
+        "family": "product-project",
+        "contract": "alternance"
+      }
+    }
+  ]
+}

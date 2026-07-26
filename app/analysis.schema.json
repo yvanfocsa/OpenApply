@@ -1,0 +1,48 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "status": { "type": "string", "enum": ["success", "error"] },
+    "contractType": { "type": "string", "enum": ["cdi", "alternance", "ambiguous"] },
+    "language": { "type": "string", "enum": ["fr", "en"] },
+    "company": { "type": "string" },
+    "role": { "type": "string" },
+    "location": { "type": "string" },
+    "summary": { "type": "string" },
+    "matchedStrengths": {
+      "type": "array",
+      "maxItems": 8,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "requirement": { "type": "string" },
+          "evidence": { "type": "string" },
+          "level": { "type": "string", "enum": ["professional", "professional_guided", "project", "knowledge"] }
+        },
+        "required": ["requirement", "evidence", "level"]
+      }
+    },
+    "questions": {
+      "type": "array",
+      "maxItems": 6,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "id": { "type": "string" },
+          "requirement": { "type": "string" },
+          "category": { "type": "string" },
+          "whyItMatters": { "type": "string" },
+          "verifiedAlternative": { "type": "string" },
+          "alternativeReason": { "type": "string" },
+          "suggestedPhrasing": { "type": "string" }
+        },
+        "required": ["id", "requirement", "category", "whyItMatters", "verifiedAlternative", "alternativeReason", "suggestedPhrasing"]
+      }
+    },
+    "error": { "type": "string" }
+  },
+  "required": ["status", "contractType", "language", "company", "role", "location", "summary", "matchedStrengths", "questions", "error"]
+}

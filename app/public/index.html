@@ -1,0 +1,779 @@
+<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="description" content="Crée localement des CV et lettres de motivation ciblés, séparés par profil candidat." />
+    <title>OpenApply | Candidatures ciblées</title>
+    <link rel="stylesheet" href="/styles.css?v=25" />
+    <script src="/app.js?v=27" type="module"></script>
+  </head>
+  <body>
+    <a class="skip-link" href="#mainContent">Aller au contenu</a>
+    <header class="topbar">
+      <a class="brand" href="/" aria-label="OpenApply, accueil">
+        <span class="brand-mark" aria-hidden="true">OA</span>
+        <span>
+          <strong>OpenApply</strong>
+        </span>
+      </a>
+      <div class="topbar-actions">
+        <button class="job-watch-summary" id="jobWatchButton" type="button" popovertarget="jobWatchPanel" aria-label="Voir les nouvelles offres détectées">
+          <span class="job-watch-signal" aria-hidden="true"></span>
+          <span class="job-watch-summary-copy">
+            <small>Veille</small>
+            <strong id="jobWatchSummaryValue">Initialisation</strong>
+          </span>
+          <span class="job-watch-badge" id="jobWatchBadge" hidden>0</span>
+        </button>
+        <button class="quota-summary" id="quotaSummaryButton" type="button" popovertarget="modelUsagePanel" aria-label="Voir les budgets des moteurs IA">
+          <span class="quota-summary-ring" id="quotaSummaryRing" aria-hidden="true"></span>
+          <span>
+            <small>Budget IA</small>
+            <strong id="quotaSummaryValue">Lecture…</strong>
+          </span>
+        </button>
+        <button class="profile-switcher" id="profileMenuButton" type="button" popovertarget="profileMenu" aria-label="Changer de profil candidat">
+          <span class="profile-avatar" id="activeProfileInitials" aria-hidden="true">MP</span>
+          <span class="profile-switcher-copy">
+            <strong id="activeProfileName">Mon profil</strong>
+            <small id="activeProfileHeadline">À configurer</small>
+          </span>
+          <span class="profile-chevron" aria-hidden="true">⌄</span>
+        </button>
+        <button class="topbar-new-button" id="topNewApplicationButton" type="button" aria-label="Nouvelle candidature">
+          <span aria-hidden="true">+</span>
+          <span>Nouvelle candidature</span>
+        </button>
+        <div class="system-state" id="systemState" role="status">
+          <span class="status-dot" aria-hidden="true"></span>
+          <span id="systemStateText">Vérification du moteur…</span>
+        </div>
+      </div>
+    </header>
+
+    <div class="profile-menu" id="profileMenu" popover>
+      <header>
+        <strong>Profils candidats</strong>
+        <span>Un historique séparé pour chaque personne.</span>
+      </header>
+      <div class="profile-menu-list" id="profileMenuList"></div>
+      <button class="profile-menu-manage" id="manageProfilesButton" type="button">Gérer les profils et le moteur IA</button>
+    </div>
+
+    <section class="model-usage-panel" id="modelUsagePanel" popover aria-labelledby="modelUsageTitle">
+      <header>
+        <div>
+          <h2 id="modelUsageTitle">Usage des moteurs IA</h2>
+          <p><span class="live-usage-dot" aria-hidden="true"></span>Actualisation automatique</p>
+        </div>
+        <button class="refresh-usage-button" id="refreshUsageButton" type="button">Rafraîchir</button>
+      </header>
+      <div class="model-usage-list" id="modelUsageList" aria-live="polite"></div>
+      <p class="usage-updated-at" id="usageUpdatedAt"></p>
+    </section>
+
+    <section class="job-watch-panel" id="jobWatchPanel" popover aria-labelledby="jobWatchTitle">
+      <header class="job-watch-panel-header">
+        <div class="job-watch-title-row">
+          <span class="job-watch-title-icon" aria-hidden="true">⌁</span>
+          <div>
+            <h2 id="jobWatchTitle">Veille d’offres</h2>
+            <p><span class="live-usage-dot" aria-hidden="true"></span>Recherche automatique et privée</p>
+          </div>
+        </div>
+        <div class="job-watch-header-actions">
+          <button class="refresh-watch-button" id="refreshJobWatchButton" type="button"><span aria-hidden="true">↻</span><span class="refresh-watch-label">Actualiser</span></button>
+          <button class="job-watch-close" id="closeJobWatchButton" type="button" aria-label="Fermer la veille">×</button>
+        </div>
+      </header>
+
+      <nav class="job-watch-tabs" role="tablist" aria-label="Veille d’offres">
+        <button id="jobWatchOffersTab" type="button" role="tab" aria-selected="true" aria-controls="jobWatchOffersView" data-watch-tab="offers">Offres <span id="jobWatchOffersTabCount">0</span></button>
+        <button id="jobWatchSearchTab" type="button" role="tab" aria-selected="false" aria-controls="jobWatchSearchView" data-watch-tab="search">Recherche</button>
+        <button id="jobWatchSourcesTab" type="button" role="tab" aria-selected="false" aria-controls="jobWatchSourcesView" data-watch-tab="sources">Sources <span id="jobWatchSourcesTabCount">0/2</span></button>
+      </nav>
+
+      <p class="job-watch-error" id="jobWatchError" role="alert" hidden></p>
+
+      <div class="job-watch-view" id="jobWatchOffersView" role="tabpanel" aria-labelledby="jobWatchOffersTab">
+        <div class="job-watch-overview">
+          <div class="job-watch-stat-primary"><span>Offres actives</span><strong id="jobWatchResultCount">0</strong></div>
+          <div class="job-watch-stat"><span>Dernier contrôle</span><strong id="jobWatchUpdatedAt">En attente</strong></div>
+          <div class="job-watch-stat"><span>Couverture</span><strong id="jobWatchCoverage">Configuration en cours</strong></div>
+        </div>
+        <div class="job-watch-overview-actions">
+          <button class="job-watch-mark-seen" id="markAllWatchJobsSeenButton" type="button" disabled>Tout marquer comme vu</button>
+          <button class="job-watch-import-all" id="importAllWatchJobsButton" type="button" disabled>Ajouter les nouvelles</button>
+        </div>
+        <div class="job-watch-results" id="jobWatchResults" aria-live="polite"></div>
+      </div>
+
+      <div class="job-watch-view" id="jobWatchSearchView" role="tabpanel" aria-labelledby="jobWatchSearchTab" hidden>
+        <form id="jobWatchSettingsForm">
+          <div class="job-watch-section-heading"><div><span class="job-watch-eyebrow">Critères</span><h3>La recherche qui travaille pour toi</h3><p>OpenApply vérifie régulièrement les sources connectées avec ces critères.</p></div></div>
+          <label class="watch-toggle"><input id="jobWatchEnabled" type="checkbox" /><span><strong>Veille automatique</strong><small>Continue la recherche lorsque ce panneau est fermé.</small></span></label>
+          <div class="job-watch-field-grid">
+            <label class="job-watch-field job-watch-field-wide"><span>Mots-clés</span><input id="jobWatchQuery" type="text" maxlength="400" placeholder="Data, vente, design, logistique, santé…" /></label>
+            <label class="job-watch-field"><span>Lieu</span><input id="jobWatchLocation" type="text" maxlength="120" placeholder="France" /></label>
+            <label class="job-watch-field"><span>Contrat</span><select id="jobWatchContract"><option value="all">CDI et alternance</option><option value="cdi">CDI</option><option value="alternance">Alternance</option></select></label>
+            <label class="job-watch-field"><span>Expérience</span><select id="jobWatchSeniority"><option value="entry">Débutant et junior</option><option value="all">Tous niveaux</option></select></label>
+            <label class="job-watch-field"><span>Fréquence</span><select id="jobWatchInterval"><option value="15">Toutes les 15 min</option><option value="30">Toutes les 30 min</option><option value="60">Toutes les heures</option><option value="180">Toutes les 3 h</option><option value="360">Toutes les 6 h</option></select></label>
+          </div>
+          <label class="watch-toggle compact"><input id="jobWatchProfileFilter" type="checkbox" /><span><strong>Limiter aux métiers du profil</strong><small>Écarte les offres proches par mots-clés mais hors de ton métier.</small></span></label>
+          <div class="job-watch-settings-actions"><span id="jobWatchSettingsStatus" role="status"></span><button type="submit">Enregistrer et rechercher</button></div>
+        </form>
+      </div>
+
+      <div class="job-watch-view" id="jobWatchSourcesView" role="tabpanel" aria-labelledby="jobWatchSourcesTab" hidden>
+        <div class="job-watch-section-heading"><div><span class="job-watch-eyebrow">Sources officielles</span><h3>Connecte les offres françaises</h3><p>Les clés sont chiffrées et restent sur cet appareil.</p></div><span class="job-watch-connected-summary" id="jobWatchCredentialState">0 sur 2 sources connectées</span></div>
+
+        <article class="official-source-card" id="franceTravailSourceCard" data-connected="false">
+          <header><span class="official-source-logo france-travail-logo" aria-hidden="true">FT</span><div><h4>France Travail</h4><p>Offres d’emploi officielles et partenaires.</p></div><span class="official-source-state" id="franceTravailConnectionState">À connecter</span></header>
+          <ol class="source-setup-steps">
+            <li><span>1</span><div><strong>Crée l’application OpenApply</strong><p>Active ensuite l’API « Offres d’emploi v2 ».</p><a href="https://francetravail.io/compte/application-creation" target="_blank" rel="noopener noreferrer">Ouvrir France Travail <span aria-hidden="true">↗</span></a></div></li>
+            <li><span>2</span><div class="source-form-helper"><strong>Complète le formulaire</strong><p><b>Nom :</b> OpenApply</p><p><b>URL :</b> l’adresse publique de ton projet ou de ton site</p><button id="copyFranceTravailDescriptionButton" type="button" data-copy-value="OpenApply est une application locale et non commerciale qui aide un candidat à rechercher des offres d’emploi et d’alternance, à les filtrer selon son profil et à préparer ses candidatures. Les données ne sont ni revendues ni publiées.">Copier la description</button></div></li>
+            <li><span>3</span><div class="official-source-fields"><strong>Colle les deux identifiants</strong><label class="job-watch-field"><span>Identifiant client</span><span class="secret-input"><input id="franceTravailClientId" type="password" autocomplete="off" spellcheck="false" /><button type="button" data-secret-toggle="franceTravailClientId" aria-label="Afficher l’identifiant client">Afficher</button></span></label><label class="job-watch-field"><span>Secret client</span><span class="secret-input"><input id="franceTravailClientSecret" type="password" autocomplete="off" spellcheck="false" /><button type="button" data-secret-toggle="franceTravailClientSecret" aria-label="Afficher le secret client">Afficher</button></span></label></div></li>
+          </ol>
+          <footer><span id="franceTravailCredentialStatus" role="status">Les deux champs sont nécessaires.</span><button class="source-disconnect-button" id="disconnectFranceTravailButton" type="button" hidden>Déconnecter</button><button class="source-connect-button" id="connectFranceTravailButton" type="button">Vérifier et connecter</button></footer>
+        </article>
+
+        <article class="official-source-card" id="laBonneAlternanceSourceCard" data-connected="false">
+          <header><span class="official-source-logo alternance-logo" aria-hidden="true">BA</span><div><h4>La Bonne Alternance</h4><p>Opportunités d’emploi en alternance, en temps réel.</p></div><span class="official-source-state" id="laBonneAlternanceConnectionState">À connecter</span></header>
+          <ol class="source-setup-steps"><li><span>1</span><div><strong>Demande une clé d’accès</strong><p>Choisis « Recherche d’opportunités d’emploi en alternance ».</p><a href="https://api.apprentissage.beta.gouv.fr/fr/explorer/recherche-offre" target="_blank" rel="noopener noreferrer">Obtenir un jeton <span aria-hidden="true">↗</span></a></div></li><li><span>2</span><div class="official-source-fields"><strong>Colle le jeton reçu</strong><label class="job-watch-field"><span>Jeton d’accès</span><span class="secret-input"><input id="laBonneAlternanceToken" type="password" autocomplete="off" spellcheck="false" /><button type="button" data-secret-toggle="laBonneAlternanceToken" aria-label="Afficher le jeton">Afficher</button></span></label></div></li></ol>
+          <footer><span id="laBonneAlternanceCredentialStatus" role="status">Aucune carte bancaire nécessaire.</span><button class="source-disconnect-button" id="disconnectLaBonneAlternanceButton" type="button" hidden>Déconnecter</button><button class="source-connect-button" id="connectLaBonneAlternanceButton" type="button">Vérifier et connecter</button></footer>
+        </article>
+
+        <details class="job-watch-public-sources"><summary><span><strong>Pages carrières Greenhouse ou Lever</strong><small id="jobWatchPublicSourceCount">Sources publiques configurées</small></span></summary><label class="job-watch-field"><span>Une URL publique par ligne</span><textarea id="jobWatchAtsSources" rows="4" placeholder="https://job-boards.greenhouse.io/entreprise"></textarea><small>OpenApply ne conserve que les offres encore publiées.</small></label><button class="save-public-sources-button" id="savePublicSourcesButton" type="button">Enregistrer les pages carrières</button></details>
+        <details class="job-watch-source-details"><summary id="jobWatchSourceSummary">État détaillé des sources</summary><div id="jobWatchSources"></div></details>
+      </div>
+    </section>
+    <main class="app-shell" id="mainContent">
+      <aside class="applications-pane" aria-labelledby="applicationsTitle">
+        <header class="applications-header">
+          <div>
+            <p class="applications-kicker">Suivi personnel</p>
+            <h2 id="applicationsTitle">Mes candidatures</h2>
+          </div>
+          <span class="applications-total" id="applicationsTotal" aria-label="0 candidature">0</span>
+        </header>
+        <div class="library-summary-row">
+          <p class="applications-summary" id="applicationsSummary" aria-live="polite">Aucune candidature à suivre.</p>
+          <button
+            class="library-selection-toggle"
+            id="librarySelectionToggle"
+            type="button"
+            aria-controls="libraryBulkPanel applicationGroups"
+            aria-pressed="false"
+          >
+            Sélectionner
+          </button>
+        </div>
+        <label class="library-search">
+          <span class="visually-hidden">Rechercher une candidature</span>
+          <svg aria-hidden="true" viewBox="0 0 24 24">
+            <path d="m20 20-4.4-4.4m2.4-5.1a7.5 7.5 0 1 1-15 0 7.5 7.5 0 0 1 15 0Z"></path>
+          </svg>
+          <input id="librarySearchField" type="search" placeholder="Entreprise ou poste" autocomplete="off" />
+        </label>
+        <div class="library-status-filters" id="libraryStatusFilters" aria-label="Filtrer les candidatures par statut">
+          <button class="is-active" type="button" data-library-status-filter="all" aria-pressed="true">
+            Toutes <span id="filterAllCount">0</span>
+          </button>
+          <button type="button" data-library-status-filter="active" aria-pressed="false">
+            Actives <span id="filterActiveCount">0</span>
+          </button>
+          <button type="button" data-library-status-filter="follow_up" aria-pressed="false">
+            À relancer <span id="filterFollowUpCount">0</span>
+          </button>
+          <button type="button" data-library-status-filter="closed" aria-pressed="false">
+            Terminées <span id="filterClosedCount">0</span>
+          </button>
+        </div>
+        <section class="library-bulk-panel" id="libraryBulkPanel" aria-labelledby="libraryBulkTitle" hidden>
+          <header>
+            <p id="libraryBulkTitle">
+              <strong id="libraryBulkSelectedCount">0</strong>
+              <span id="libraryBulkSelectedLabel">sélectionnée</span>
+            </p>
+            <button class="library-select-all" id="librarySelectAllButton" type="button">
+              Tout sélectionner
+            </button>
+          </header>
+          <div class="library-bulk-fields">
+            <label>
+              <span>Domaine</span>
+              <select id="libraryBulkCategory">
+                <option value="">Conserver</option>
+              </select>
+            </label>
+            <label>
+              <span>Statut</span>
+              <select id="libraryBulkStatus">
+                <option value="">Conserver</option>
+              </select>
+            </label>
+          </div>
+          <button class="library-bulk-apply" id="libraryBulkApplyButton" type="button" disabled>
+            Appliquer aux candidatures
+          </button>
+          <p class="library-bulk-message" id="libraryBulkMessage" role="status" aria-live="polite" hidden></p>
+        </section>
+        <p class="visually-hidden" id="libraryAnnouncement" role="status" aria-live="polite"></p>
+
+        <nav class="application-groups" id="applicationGroups" aria-label="Candidatures par domaine"></nav>
+      </aside>
+
+      <section class="profile-settings" id="profileSettings" aria-labelledby="profileSettingsTitle" hidden>
+        <header class="settings-header">
+          <div>
+            <button class="settings-back" id="closeProfileSettingsButton" type="button">← Retour aux candidatures</button>
+            <p class="context-line">Espace candidat</p>
+            <h1 id="profileSettingsTitle">Profils et moteur IA</h1>
+            <p>Chaque profil possède ses faits, ses modèles, ses domaines et son propre historique.</p>
+          </div>
+          <button class="secondary-button" id="newProfileButton" type="button">+ Nouveau profil</button>
+        </header>
+
+        <div class="settings-layout">
+          <nav class="settings-profile-list" id="settingsProfileList" aria-label="Profils disponibles"></nav>
+
+          <form class="profile-form" id="profileForm" novalidate>
+            <div class="profile-form-heading">
+              <div>
+                <span class="profile-form-mode" id="profileFormMode">Profil actif</span>
+                <h2 id="profileFormTitle">Mon profil</h2>
+              </div>
+              <span class="configuration-status" id="profileConfigurationStatus">Configuré</span>
+            </div>
+
+            <div class="settings-section">
+              <h3>Identité professionnelle</h3>
+              <div class="settings-field-grid">
+                <label class="settings-field">
+                  <span>Nom complet</span>
+                  <input id="profileName" name="name" type="text" maxlength="80" autocomplete="name" required />
+                </label>
+                <label class="settings-field">
+                  <span>Métier ou objectif</span>
+                  <input id="profileHeadline" name="headline" type="text" maxlength="120" placeholder="Exemple : Data analyst et BI" required />
+                </label>
+              </div>
+              <label class="settings-field">
+                <span>Domaines de candidature</span>
+                <input id="profileDomains" name="domains" type="text" placeholder="Exemple : Data, Vente, Design" required />
+                <small>Sépare les domaines par des virgules. Ils organiseront la bibliothèque.</small>
+              </label>
+            </div>
+
+            <div class="settings-section" id="candidateFactsSection">
+              <h3 id="profileFactsLabel">Faits vérifiés</h3>
+              <p>Expériences, dates, formations, outils réellement pratiqués, langues et projets. Cette base empêche les inventions.</p>
+              <textarea id="profileFacts" name="facts" rows="9" maxlength="30000" placeholder="Expériences, formations, compétences, langues, projets et résultats vérifiables." aria-labelledby="profileFactsLabel"></textarea>
+              <p class="locked-profile-note" id="lockedProfileNote" hidden>Les faits du profil restent privés sur cet appareil.</p>
+            </div>
+
+            <div class="settings-section" id="profileTemplatesSection">
+              <div class="settings-section-heading">
+                <div>
+                  <h3>Modèles de documents</h3>
+                  <p>Tu peux remplacer chaque modèle maintenant ou plus tard. Les fichiers d’origine restent inchangés.</p>
+                </div>
+                <span class="editable-badge">Modifiables</span>
+              </div>
+              <p>Le CV français et la lettre sont nécessaires. Le CV anglais est optionnel.</p>
+              <div class="template-upload-grid">
+                <label class="template-upload">
+                  <span>CV français <strong>DOCX</strong></span>
+                  <input id="profileCvFr" type="file" accept=".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document" />
+                  <small id="profileCvFrState">À ajouter</small>
+                </label>
+                <label class="template-upload">
+                  <span>CV anglais <strong>DOCX</strong></span>
+                  <input id="profileCvEn" type="file" accept=".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document" />
+                  <small id="profileCvEnState">Optionnel</small>
+                </label>
+                <label class="template-upload">
+                  <span>Lettre <strong>DOCX</strong></span>
+                  <input id="profileCoverLetter" type="file" accept=".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document" />
+                  <small id="profileCoverLetterState">À ajouter</small>
+                </label>
+              </div>
+            </div>
+
+            <fieldset class="settings-section provider-section">
+              <legend>Moteur IA</legend>
+              <p>Choisis une connexion locale ou une clé API. OpenApply indique clairement ce qui est prêt sur cet appareil.</p>
+              <div class="provider-options" id="providerOptions"></div>
+              <div class="provider-runtime-fields" id="providerRuntimeFields" hidden>
+                <label class="settings-field" id="providerModelField">
+                  <span>Modèle</span>
+                  <select id="providerModel" name="providerModel"></select>
+                  <small id="providerModelHelp">Les modèles détectés sur le serveur local apparaissent ici.</small>
+                </label>
+                <label class="settings-field" id="providerEndpointField">
+                  <span>Adresse du serveur local</span>
+                  <input id="providerEndpoint" name="providerEndpoint" type="url" inputmode="url" autocomplete="off" />
+                  <small>Seules les adresses locales sont acceptées.</small>
+                </label>
+              </div>
+              <label class="settings-field api-key-field" id="apiKeyField" hidden>
+                <span>Clé API</span>
+                <input id="providerApiKey" name="apiKey" type="password" autocomplete="off" placeholder="La clé existante ne sera jamais affichée" />
+              </label>
+              <div class="provider-connection-panel">
+                <div class="provider-connection-status" id="providerConnectionStatus" role="status"></div>
+                <button class="provider-setup-button" id="providerSetupButton" type="button" hidden>Configurer visuellement</button>
+              </div>
+            </fieldset>
+
+            <p class="form-error settings-error" id="profileFormError" role="alert"></p>
+            <div class="settings-actions">
+              <button class="primary-button" id="saveProfileButton" type="submit">Enregistrer le profil</button>
+              <button class="text-button" id="cancelProfileEditButton" type="button">Annuler</button>
+            </div>
+          </form>
+
+          <aside class="profile-preview-panel" aria-labelledby="profilePreviewTitle">
+            <div class="profile-preview-heading">
+              <span>Prévisualisation</span>
+              <h2 id="profilePreviewTitle">Ton espace candidat</h2>
+              <p>Le profil se construit au fil du formulaire.</p>
+            </div>
+            <div class="profile-stack" id="profilePreviewStack">
+              <article class="profile-stack-card is-current" id="previewCurrentProfile">
+                <span class="profile-stack-label">Profil actuellement utilisé</span>
+                <div class="profile-stack-identity">
+                  <span class="profile-avatar" id="previewCurrentInitials" aria-hidden="true">MP</span>
+                  <div>
+                    <strong id="previewCurrentName">Mon profil</strong>
+                    <small id="previewCurrentHeadline">À configurer</small>
+                  </div>
+                </div>
+              </article>
+              <span class="profile-stack-connector" id="previewProfileConnector" aria-hidden="true"></span>
+              <article class="profile-stack-card is-draft" id="previewDraftProfile">
+                <div class="profile-stack-card-topline">
+                  <span class="profile-stack-label" id="previewDraftLabel">Nouveau profil</span>
+                  <span class="preview-readiness" id="previewReadiness">À compléter</span>
+                </div>
+                <div class="profile-stack-identity">
+                  <span class="profile-avatar preview-avatar" id="previewDraftInitials" aria-hidden="true">NP</span>
+                  <div>
+                    <strong id="previewDraftName">Nom du candidat</strong>
+                    <small id="previewDraftHeadline">Objectif professionnel</small>
+                  </div>
+                </div>
+                <div class="preview-domain-list" id="previewDomains"></div>
+                <dl class="preview-profile-details">
+                  <div><dt>Moteur</dt><dd id="previewProvider">Codex</dd></div>
+                  <div><dt>Documents</dt><dd id="previewDocuments">0 sur 2 requis</dd></div>
+                  <div><dt>Faits</dt><dd id="previewFacts">À renseigner</dd></div>
+                </dl>
+                <div class="preview-progress" aria-hidden="true"><span id="previewProgressBar"></span></div>
+              </article>
+            </div>
+            <p class="profile-preview-note" id="profilePreviewNote">À l’enregistrement, ce profil apparaîtra sous le profil actif et gardera ses candidatures séparées.</p>
+          </aside>
+        </div>
+      </section>
+
+      <div class="workspace">
+      <section class="control-pane" aria-labelledby="pageTitle">
+        <div class="intro">
+          <p class="context-line" id="profileContextLine">Candidatures adaptées à votre métier</p>
+          <h1 id="pageTitle">Nouvelle candidature</h1>
+          <p id="profileIntroText">Colle une offre ou une liste de liens. OpenApply analyse, adapte et contrôle les deux documents.</p>
+        </div>
+
+        <form id="jobForm" novalidate>
+          <fieldset class="field-group">
+            <legend>Domaine de la candidature</legend>
+            <div class="segmented-control category-control" id="categoryControl"></div>
+            <p class="field-help">Auto classe le poste d’après son intitulé. Ton choix manuel reste prioritaire.</p>
+          </fieldset>
+
+          <fieldset class="field-group" id="contractFieldset">
+            <legend>Type de contrat</legend>
+            <div class="segmented-control">
+              <label>
+                <input type="radio" name="mode" value="auto" checked />
+                <span>Auto</span>
+              </label>
+              <label>
+                <input type="radio" name="mode" value="cdi" />
+                <span>CDI</span>
+              </label>
+              <label>
+                <input type="radio" name="mode" value="alternance" />
+                <span>Alternance</span>
+              </label>
+            </div>
+            <p class="field-help" id="contractHelp">Auto lit le type de contrat dans l’offre. Ton choix manuel reste prioritaire.</p>
+          </fieldset>
+
+          <fieldset class="field-group">
+            <legend>Langue des documents</legend>
+            <div class="segmented-control">
+              <label>
+                <input type="radio" name="language" value="auto" checked />
+                <span>Auto</span>
+              </label>
+              <label>
+                <input type="radio" name="language" value="fr" />
+                <span>Français</span>
+              </label>
+              <label>
+                <input type="radio" name="language" value="en" />
+                <span>English</span>
+              </label>
+            </div>
+            <p class="field-help" id="languageHelp">Auto suit la langue dominante de l’offre. Le CV FR ou EN sert aussi bien au CDI qu’à l’alternance.</p>
+          </fieldset>
+
+          <fieldset class="field-group automation-panel">
+            <legend>Automatisation</legend>
+            <div class="automation-settings">
+              <label class="automation-switch">
+                <input id="automationEnabledCheckbox" type="checkbox" checked />
+                <span class="switch-track" aria-hidden="true"><span></span></span>
+                <span class="automation-switch-copy">
+                  <strong>Continuer automatiquement</strong>
+                  <small>S’arrête seulement si une compétence doit être confirmée.</small>
+                </span>
+              </label>
+              <label class="completion-action" for="completionActionSelect">
+                <span>
+                  <strong>Sortie</strong>
+                  <small>Pack téléchargé à la fin</small>
+                </span>
+                <select id="completionActionSelect">
+                  <option value="pdf">Pack PDF</option>
+                  <option value="docx">Pack DOCX</option>
+                  <option value="preview">Aperçu seulement</option>
+                </select>
+              </label>
+            </div>
+            <p class="draft-save-status" id="draftSaveStatus" aria-live="polite">Le brouillon est sauvegardé automatiquement sur cet appareil.</p>
+          </fieldset>
+
+          <section class="field-group source-composer" id="sourceComposer" aria-labelledby="sourceComposerTitle">
+            <div class="composer-heading">
+              <h2 id="sourceComposerTitle">Offres à analyser</h2>
+              <output id="offerSlotCount" aria-live="polite">1 / 10 poste</output>
+            </div>
+            <p class="field-help composer-help" id="sourceComposerHelp">Colle un lien ou toute une colonne Excel dans le premier champ. Un poste sera créé automatiquement par lien, jusqu’à 10.</p>
+
+            <div class="source-mode-switch" role="group" aria-label="Type de candidature">
+              <button class="source-mode-option is-active" id="linkModeButton" type="button" aria-pressed="true">Liens d’offres</button>
+              <button class="source-mode-option" id="textModeButton" type="button" aria-pressed="false">Texte d’une offre</button>
+              <button class="source-mode-option" id="spontaneousModeButton" type="button" aria-pressed="false">Candidature spontanée</button>
+            </div>
+
+            <div class="link-offer-region" id="linkOfferRegion">
+              <div class="offer-link-list" id="offerLinkList" aria-label="Liens des offres"></div>
+
+              <button class="add-offer-button" id="addOfferButton" type="button">
+                <span aria-hidden="true">+</span>
+                <span class="add-offer-label">Ajouter un poste</span>
+              </button>
+
+              <div class="source-secondary-actions">
+                <button class="source-mode-button" id="bulkImportButton" type="button">Importer une liste de liens</button>
+              </div>
+
+              <div class="bulk-import-region" id="bulkImportRegion" hidden>
+                <div class="label-row">
+                  <label for="bulkOfferLinks">Liste de postes</label>
+                  <span id="bulkImportCount">0 lien détecté</span>
+                </div>
+                <textarea
+                  id="bulkOfferLinks"
+                  rows="7"
+                  maxlength="20000"
+                  spellcheck="false"
+                  placeholder="Colle jusqu’à 10 liens depuis Excel, un fichier CSV ou une liste."
+                  aria-describedby="bulkImportHelp"
+                ></textarea>
+                <p class="field-help" id="bulkImportHelp">Les lignes, colonnes, tabulations et hyperliens Excel sont reconnus. Les doublons sont supprimés automatiquement.</p>
+                <div class="bulk-import-actions">
+                  <button class="primary-button compact" id="confirmBulkImportButton" type="button">Importer les liens</button>
+                  <button class="text-button" id="cancelBulkImportButton" type="button">Annuler</button>
+                </div>
+              </div>
+            </div>
+
+            <div class="text-offer-region" id="textOfferRegion" hidden>
+              <div class="label-row">
+                <label for="offerText">Texte complet de l’offre</label>
+                <span id="offerTextCount">0 / 60 000</span>
+              </div>
+              <textarea
+                id="offerText"
+                name="offerText"
+                rows="9"
+                maxlength="60000"
+                spellcheck="true"
+                placeholder="Colle ici l’annonce complète, notamment si la page est privée ou inaccessible."
+                aria-describedby="textOfferHelp formError"
+              ></textarea>
+              <p class="field-help" id="textOfferHelp">Le texte est traité comme une seule offre.</p>
+            </div>
+
+            <div class="spontaneous-region" id="spontaneousRegion" hidden>
+              <div class="spontaneous-target-list" id="spontaneousTargetList" aria-label="Entreprises ciblées"></div>
+
+              <button class="add-offer-button add-spontaneous-button" id="addSpontaneousTargetButton" type="button">
+                <span aria-hidden="true">+</span>
+                <span class="add-spontaneous-label">Ajouter une entreprise</span>
+              </button>
+
+              <p class="field-help spontaneous-assurance">
+                Le lien et l’angle sont optionnels. OpenApply analyse la page fournie sans prétendre qu’un poste précis est ouvert.
+              </p>
+            </div>
+          </section>
+
+          <p class="form-error" id="formError" role="alert"></p>
+          <div class="engine-setup-prompt" id="engineSetupPrompt" hidden>
+            <div>
+              <strong>Le moteur IA attend ta connexion</strong>
+              <span>Tout se fait maintenant depuis OpenApply, sans commande à copier.</span>
+            </div>
+            <button class="secondary-button compact" id="openConnectionWizardButton" type="button">Configurer le moteur IA</button>
+          </div>
+
+          <div class="form-actions">
+            <button class="primary-button" id="submitButton" type="submit">
+              <span class="button-label">Analyser l’offre</span>
+              <span class="button-progress" aria-hidden="true"></span>
+            </button>
+            <button class="text-button" id="cancelButton" type="button" hidden>Annuler</button>
+            <button class="text-button" id="resetButton" type="button" hidden>Nouvelle candidature</button>
+          </div>
+        </form>
+
+        <section class="skills-review" id="skillsReview" aria-labelledby="skillsReviewTitle" hidden>
+          <header class="skills-review-header">
+            <div>
+              <p class="review-status">Analyse terminée</p>
+              <h2 id="skillsReviewTitle">Vérifie les compétences avant le CV</h2>
+            </div>
+            <span class="review-count" id="reviewCount"></span>
+          </header>
+          <p class="review-summary" id="reviewSummary"></p>
+
+          <nav class="bundle-review-nav" id="bundleReviewNav" aria-label="Navigation entre les offres du bundle" hidden>
+            <button class="text-button" id="previousOfferButton" type="button">← Offre précédente</button>
+            <strong id="bundlePosition"></strong>
+            <span class="shared-answer-status" id="sharedAnswerStatus">Réponses identiques mutualisées</span>
+          </nav>
+
+          <div class="matched-strengths" id="matchedStrengthsRegion">
+            <h3>Déjà démontré dans ton parcours</h3>
+            <ul id="matchedStrengths"></ul>
+          </div>
+
+          <form id="skillsReviewForm" novalidate>
+            <p class="level-guidance">Choisis le niveau le plus élevé que tu peux expliquer concrètement en entretien. Un clic suffit, aucun texte n’est obligatoire.</p>
+            <div class="skill-questions" id="skillQuestions"></div>
+            <p class="form-error review-error" id="reviewError" role="alert"></p>
+            <div class="review-actions">
+              <button class="primary-button" id="generateButton" type="submit">Générer avec mes réponses</button>
+              <button class="text-button" id="editOfferButton" type="button">Modifier l’offre</button>
+            </div>
+          </form>
+        </section>
+
+        <section class="progress-region" id="progressRegion" aria-labelledby="progressTitle" hidden>
+          <div class="progress-heading">
+            <div>
+              <h2 id="progressTitle">Traitement en cours</h2>
+              <p id="progressMessage" aria-live="polite">Préparation</p>
+            </div>
+            <div class="progress-utilities">
+              <button class="utility-toggle" id="automationToggleButton" type="button" aria-pressed="true" title="Continuer automatiquement lorsqu’aucune compétence ne nécessite de réponse">
+                <span class="utility-toggle-dot" aria-hidden="true"></span>
+                <span>Auto</span>
+              </button>
+              <button class="utility-toggle" id="soundToggleButton" type="button" aria-pressed="true" title="Activer ou couper les notifications sonores">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 9v6h4l5 4V5L9 9H5Zm12.5.5a4 4 0 0 1 0 5m2-7a7 7 0 0 1 0 9" /></svg>
+                <span>Son</span>
+              </button>
+              <strong id="progressPercent">0 %</strong>
+            </div>
+          </div>
+          <div class="progress-track" aria-hidden="true"><span id="progressBar"></span></div>
+          <p class="process-metadata" id="processMetadata"></p>
+          <ol class="steps" aria-label="Étapes du traitement">
+            <li data-step="analyzing"><span>1</span>Analyse</li>
+            <li data-step="review"><span>2</span>Validation</li>
+            <li data-step="drafting"><span>3</span>Adaptation</li>
+            <li data-step="verifying"><span>4</span>LibreOffice</li>
+            <li data-step="completed"><span>5</span>Fichiers</li>
+          </ol>
+          <section class="recovery-panel" id="recoveryPanel" hidden aria-labelledby="recoveryTitle">
+            <div class="recovery-heading">
+              <div>
+                <span class="recovery-kicker" id="recoveryKicker">Checkpoint disponible</span>
+                <h3 id="recoveryTitle">Continuer sans recommencer</h3>
+                <p id="recoveryMessage">Choisis un moteur prêt, puis reprends à la dernière étape validée.</p>
+              </div>
+              <span class="recovery-stage" id="recoveryStage"></span>
+            </div>
+            <div class="recovery-controls">
+              <label>
+                <span>Moteur</span>
+                <select id="recoveryProvider"></select>
+              </label>
+              <label id="recoveryModelField">
+                <span>Modèle</span>
+                <select id="recoveryModel"></select>
+              </label>
+              <button class="primary-button compact" id="resumeJobButton" type="button">Reprendre</button>
+            </div>
+            <a class="error-report-link" id="errorReportLink" href="#" hidden>Télécharger le rapport d’erreur</a>
+            <p class="form-error recovery-error" id="recoveryError" role="alert"></p>
+          </section>
+        </section>
+
+      </section>
+
+      <section class="preview-pane" aria-labelledby="previewTitle">
+        <header class="preview-header">
+          <div class="preview-heading">
+            <h2 id="previewTitle">Aperçu des documents</h2>
+            <p id="previewSubtitle">Les PDF apparaîtront ici après validation.</p>
+          </div>
+          <div class="preview-tools">
+            <div class="preview-tabs" id="previewTabs" role="tablist" aria-label="Document à prévisualiser" hidden>
+              <button class="preview-tab" type="button" role="tab" data-document="cv" aria-selected="true">CV</button>
+              <button class="preview-tab" type="button" role="tab" data-document="letter" aria-selected="false">Lettre</button>
+            </div>
+            <span class="page-badge">2 documents · 1 page</span>
+          </div>
+        </header>
+
+        <div class="preview-stage" id="previewStage">
+          <div class="document-placeholder" id="documentPlaceholder" aria-hidden="true">
+            <div class="mini-name"></div>
+            <div class="mini-title"></div>
+            <div class="mini-rule"></div>
+            <div class="mini-heading"></div>
+            <div class="mini-lines"><i></i><i></i><i></i></div>
+            <div class="mini-heading short"></div>
+            <div class="mini-lines dense"><i></i><i></i><i></i><i></i><i></i></div>
+            <div class="mini-heading"></div>
+            <div class="mini-lines"><i></i><i></i><i></i></div>
+          </div>
+          <div class="empty-copy" id="emptyCopy">
+            <strong>Prêt pour la prochaine offre</strong>
+            <span>Le modèle original ne sera jamais écrasé.</span>
+          </div>
+          <img id="documentPreview" src="/document-canvas.svg" alt="" decoding="async" hidden>
+        </div>
+
+        <section class="bundle-results" id="bundleResults" aria-labelledby="bundleResultsTitle" hidden>
+          <header class="bundle-results-header">
+            <div>
+              <p class="review-status" id="bundleResultsStatus">Bundle en cours</p>
+              <h3 id="bundleResultsTitle">Candidatures du bundle</h3>
+            </div>
+            <div class="bundle-header-actions">
+              <button class="secondary-button compact" id="bundleRetryFailuresButton" type="button" hidden>Relancer les échecs</button>
+              <div class="bundle-pack-actions" id="bundlePackActions" hidden>
+                <a class="primary-button compact extension-pack-download" id="bundleExtensionDownload" href="#" aria-label="Télécharger le pack ZIP compatible avec l’extension Profil candidat">Extension ZIP</a>
+                <a class="secondary-button compact" id="bundleDocxDownload" href="#" aria-label="Télécharger tous les CV et lettres en DOCX dans un ZIP">DOCX</a>
+                <a class="secondary-button compact" id="bundlePdfDownload" href="#" aria-label="Télécharger tous les CV et lettres en PDF dans un ZIP">PDF</a>
+              </div>
+            </div>
+          </header>
+          <p class="bundle-extension-summary" id="bundleExtensionSummary" hidden></p>
+          <details class="bundle-extension-review" id="bundleExtensionReview" hidden>
+            <summary id="bundleExtensionReviewTitle">Vérifications humaines</summary>
+            <ul id="bundleExtensionReviewList"></ul>
+          </details>
+          <div class="bundle-result-list" id="bundleResultList"></div>
+        </section>
+
+        <footer class="result-bar" id="resultBar" hidden>
+          <div class="result-copy">
+            <span class="success-mark" aria-hidden="true">
+              <svg viewBox="0 0 24 24" focusable="false"><path d="m6.5 12.5 3.4 3.4 7.6-8" /></svg>
+            </span>
+            <div class="result-details">
+              <div class="result-meta">
+                <span>Candidature prête</span>
+                <span class="result-category-badge" id="resultCategoryBadge">Technique</span>
+              </div>
+              <strong id="resultTitle">Candidature prête</strong>
+              <span id="resultSummary"></span>
+            </div>
+          </div>
+          <div class="download-groups" aria-label="Télécharger le CV et la lettre">
+            <a class="secondary-button compact pack-download" id="docxPackDownload" href="#" aria-label="Télécharger le CV et la lettre en DOCX dans un ZIP">
+              <strong>DOCX</strong>
+              <small>CV + lettre · ZIP</small>
+            </a>
+            <a class="primary-button compact pack-download" id="pdfPackDownload" href="#" aria-label="Télécharger le CV et la lettre en PDF dans un ZIP">
+              <strong>PDF</strong>
+              <small>CV + lettre · ZIP</small>
+            </a>
+          </div>
+        </footer>
+      </section>
+      </div>
+    </main>
+
+    <dialog class="provider-connect-dialog" id="providerConnectionDialog" aria-labelledby="providerConnectionTitle">
+      <div class="provider-connect-shell">
+        <header class="provider-connect-header">
+          <div class="provider-connect-brand">
+            <span class="provider-connect-icon" id="providerConnectionIcon" aria-hidden="true">IA</span>
+            <div>
+              <span class="provider-connect-kicker">Connexion au moteur IA</span>
+              <h2 id="providerConnectionTitle">Connecter ton moteur</h2>
+            </div>
+          </div>
+          <button class="provider-connect-close" id="closeProviderConnectionButton" type="button" aria-label="Fermer la fenêtre">×</button>
+        </header>
+
+        <div class="provider-connect-body">
+          <div class="provider-connect-intro">
+            <p id="providerConnectionSubtitle">OpenApply te guide et vérifie la connexion automatiquement.</p>
+            <span class="provider-connect-badge" id="providerConnectionBadge">À connecter</span>
+          </div>
+
+          <ol class="provider-connect-steps" id="providerConnectionSteps" aria-label="Étapes de connexion"></ol>
+
+          <section class="provider-connect-key" id="providerConnectionKeyRegion" hidden>
+            <div class="provider-connect-key-heading">
+              <label for="providerConnectionApiKey">Clé API</label>
+              <a id="providerConnectionAccountLink" href="#" target="_blank" rel="noopener noreferrer">Créer ou retrouver ma clé</a>
+            </div>
+            <div class="provider-connect-key-control">
+              <input id="providerConnectionApiKey" type="password" autocomplete="off" placeholder="Colle ta clé ici" />
+              <button class="secret-visibility-button" id="toggleProviderConnectionKeyButton" type="button" aria-label="Afficher ou masquer la clé">Afficher</button>
+            </div>
+            <p>La clé est envoyée uniquement à ton serveur OpenApply local et stockée dans son coffre chiffré.</p>
+          </section>
+
+          <div class="provider-connect-progress" id="providerConnectionProgress" role="status" aria-live="polite">
+            <span class="provider-connect-progress-dot" aria-hidden="true"></span>
+            <p id="providerConnectionMessage">Choisis l’action ci-dessous pour commencer.</p>
+          </div>
+          <p class="form-error provider-connect-error" id="providerConnectionError" role="alert"></p>
+        </div>
+
+        <footer class="provider-connect-actions">
+          <button class="primary-button" id="providerConnectionPrimaryButton" type="button">Connecter</button>
+          <button class="secondary-button" id="providerConnectionCheckButton" type="button">Vérifier la connexion</button>
+          <button class="text-button" id="providerConnectionLaterButton" type="button">Plus tard</button>
+        </footer>
+      </div>
+    </dialog>
+
+    <div class="automation-toast" id="automationToast" role="status" aria-live="polite" hidden></div>
+    <noscript>Cette interface locale nécessite JavaScript pour créer la candidature.</noscript>
+  </body>
+</html>

@@ -1,0 +1,37 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "status": { "type": "string", "enum": ["success", "error"] },
+    "contractType": { "type": "string", "enum": ["cdi", "alternance", "ambiguous"] },
+    "language": { "type": "string", "enum": ["fr", "en"] },
+    "company": { "type": "string" },
+    "role": { "type": "string" },
+    "summary": { "type": "string" },
+    "docxPath": { "type": "string" },
+    "pdfPath": { "type": "string" },
+    "coverLetterDocxPath": { "type": "string" },
+    "coverLetterPdfPath": { "type": "string" },
+    "omittedRequirements": {
+      "type": "array",
+      "maxItems": 3,
+      "items": { "type": "string" }
+    },
+    "error": { "type": "string" }
+  },
+  "required": [
+    "status",
+    "contractType",
+    "language",
+    "company",
+    "role",
+    "summary",
+    "docxPath",
+    "pdfPath",
+    "coverLetterDocxPath",
+    "coverLetterPdfPath",
+    "omittedRequirements",
+    "error"
+  ]
+}

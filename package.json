@@ -1,0 +1,17 @@
+{
+  "name": "openapply",
+  "version": "1.0.0",
+  "description": "Local-first, open-source application for truthful CV and cover-letter tailoring across professions.",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node app/server.mjs",
+    "doctor": "node app/doctor.mjs",
+    "privacy:check": "node scripts/privacy-check.mjs",
+    "check": "npm run privacy:check && node --check app/extension-pack.mjs && node --check app/antigravity-provider.mjs && node --check app/doctor.mjs && node --check app/job-analyzer-ai.mjs && node --check app/job-classifier.mjs && node --check app/job-sourcer.mjs && node --check app/offer-source.mjs && node --check app/ollama-provider.mjs && node --check app/platform.mjs && node --check app/provider-usage.mjs && node --check app/server.mjs && node --check app/public/app.js && node --check scripts/privacy-check.mjs && node --check .agents/skills/classify-job/scripts/classify-job.mjs && node test/link-import.test.mjs && node test/antigravity-provider.test.mjs && node test/job-classifier.test.mjs && node test/job-sourcer.test.mjs && node test/offer-source.test.mjs && node test/ollama-provider.test.mjs && node test/platform.test.mjs && node test/provider-usage.test.mjs"
+  }
+}

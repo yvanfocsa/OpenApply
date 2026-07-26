@@ -1,0 +1,4 @@
+interface:
+  display_name: "Candidature adaptée"
+  short_description: "CV et lettre ciblés pour tout métier"
+  default_prompt: "Crée un CV et une lettre ciblés à partir des faits et modèles fournis, sans rien inventer."
