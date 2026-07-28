@@ -1,4 +1,4 @@
-import { createReadStream, existsSync, readdirSync } from "node:fs";
+import { createReadStream, existsSync, readFileSync, readdirSync } from "node:fs";
 import { mkdir, readFile, readdir, realpath, stat, unlink, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { execFile } from "node:child_process";
@@ -40,6 +40,7 @@ import {
   hydrateSpontaneousSource,
 } from "./offer-source.mjs";
 import {
+  canonicalUrl,
   parseAtsSources,
   searchJobs,
   SOURCING_PROVIDERS,
@@ -881,7 +882,8 @@ function profileOverrideTemplatePaths(profile) {
   return {
     cvFr: discoveredTemplatePath(templateRoot, "cv_fr.docx", (name) => name.includes("cv") && /\b(fr|french|francais)\b/.test(name)),
     cvEn: discoveredTemplatePath(templateRoot, "cv_en.docx", (name) => /\b(cv|resume)\b/.test(name) && /\b(en|english|anglais)\b/.test(name)),
-    coverLetter: discoveredTemplatePath(templateRoot, "cover_letter.docx", (name) => /\b(cover|letter|lettre|motivation|lm)\b/.test(name)),
+    coverLetter: discoveredTemplatePath(templateRoot, "cover_letter.docx", (name) => /\b(cover|letter|lettre|motivation|lm)\b/.test(name) && !/\b(en|english|anglais)\b/.test(name)),
+    coverLetterEn: discoveredTemplatePath(templateRoot, "cover_letter_en.docx", (name) => /\b(cover|letter|lettre|motivation|lm)\b/.test(name) && /\b(en|english|anglais)\b/.test(name)),
   };
 }
 
@@ -2219,6 +2221,7 @@ function publicBundle(bundle) {
       offer: item.offer,
       spontaneousTarget: item.spontaneousTarget || null,
       state: item.state,
+      duplicateWarning: item.duplicateWarning || "",
       failureKind: item.failureKind || null,
       canResume: item.state === "failed" && Boolean(item.analysis || item.offer),
       resumeFrom: item.state === "failed" && item.analysis ? "generation" : item.state === "failed" ? "analysis" : null,
@@ -2453,10 +2456,10 @@ Requirements:
 - Follow the local tailor-application skill. Use only the facts in the candidate-profile block and never read another profile under ${PROFILES_DIR}.
 - The CV title header (P[2]) may include a contract mention (e.g. "CANDIDATURE CDI" or "CANDIDATURE ALTERNANCE"), provided the job title is kept concise and trimmed so the full line fits cleanly next to the candidate photo without overflowing or truncating.
 - When editing DOCX paragraphs in Python, always modify specific run.text attributes in-place. Never reassign paragraph.text = ... on existing paragraphs, as this destroys run formatting (bold, italics), tab alignments, and embedded media (such as the candidate photo in P[0]).
-- Use ${templates.cvFr} for a French CV and ${existsSync(templates.cvEn) ? templates.cvEn : templates.cvFr} for an English CV. Use ${templates.coverLetter} for the letter.
+- Use ${templates.cvFr} for a French CV and ${existsSync(templates.cvEn) ? templates.cvEn : templates.cvFr} for an English CV. Use ${existsSync(templates.coverLetterEn) ? templates.coverLetterEn : templates.coverLetter} for an English cover letter, and ${templates.coverLetter} for a French cover letter.
 - Preserve the selected DOCX references, including their portrait, page geometry, styles, margins, spacing, sections, and visual hierarchy. Create a unique new output directory under ${outputDirectory} named after the target company and role (e.g. generated/<Company>_<Role>); never overwrite a previous generated application.
 - Produce a tailored CV and a tailored cover letter, each in DOCX and PDF. The PDF files MUST strictly be named ${pdfNames.cvPdfName} and ${pdfNames.letterPdfName}. Do not use any other name for the PDF files.
-- Write every editable field in the selected language. Do not mix French and English.
+- Write every editable field strictly in the selected language. STRICT LANGUAGE PURITY: In English documents, 100% of the text must be in English with ZERO French words (use "APPRENTICESHIP" or "PERMANENT POSITION" in header, "Subject: Application for...", "Dear Hiring Manager,", "Sincerely,"). In French documents, keep 100% in French. Do not mix languages.
 - ${contractRule}
 - Render both documents with LibreOffice, enforce exactly one page per document, and visually inspect both rendered pages.
 - Never fabricate experience, tools, diplomas, certifications, dates, metrics, or production usage.
@@ -3406,6 +3409,75 @@ function runBundleAnalysisQueue(bundle) {
   }
 }
 
+function offerContentFingerprint(item) {
+  if (!item.analysis) return "";
+  const company = String(item.analysis.company || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLocaleLowerCase("fr").trim();
+  const role = String(item.analysis.role || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLocaleLowerCase("fr").trim();
+  if (!company || !role) return "";
+  return `${company}|${role}`;
+}
+
+function detectBundleContentDuplicates(bundle) {
+  const readyItems = bundle.items.filter((item) => item.state === "needs_input" && item.analysis);
+  // 1. Canonical URL dedup within the bundle (catches redirects to same final URL)
+  const seenUrls = new Map();
+  for (const item of readyItems) {
+    const url = item.offerSnapshot?.url || canonicalUrl(item.offer) || "";
+    if (!url) continue;
+    const canonical = canonicalUrl(url) || url;
+    if (seenUrls.has(canonical)) {
+      const otherIndex = seenUrls.get(canonical);
+      item.duplicateWarning = `Doublon detecte : meme URL que le poste ${otherIndex + 1} (sources differentes, meme offre).`;
+    } else {
+      seenUrls.set(canonical, item.index);
+    }
+  }
+  // 2. Content fingerprint dedup (same company + role from analysis)
+  const seenFingerprints = new Map();
+  for (const item of readyItems) {
+    if (item.duplicateWarning) continue;
+    const fingerprint = offerContentFingerprint(item);
+    if (!fingerprint) continue;
+    if (seenFingerprints.has(fingerprint)) {
+      const otherIndex = seenFingerprints.get(fingerprint);
+      item.duplicateWarning = `Doublon probable : meme entreprise et poste que le lien ${otherIndex + 1} (${item.analysis.company} - ${item.analysis.role}).`;
+    } else {
+      seenFingerprints.set(fingerprint, item.index);
+    }
+  }
+  // 3. Check against past completed applications from checkpoints
+  try {
+    const checkpointFiles = readdirSync(CHECKPOINT_DIR, { withFileTypes: true });
+    const pastFingerprints = new Map();
+    for (const entry of checkpointFiles) {
+      if (!entry.isFile() || !entry.name.endsWith(".json")) continue;
+      try {
+        const raw = readFileSync(path.join(CHECKPOINT_DIR, entry.name), "utf8");
+        const checkpoint = JSON.parse(raw);
+        if (checkpoint.state !== "completed" || checkpoint.profileId !== bundle.profileId) continue;
+        const url = checkpoint.offerSnapshot?.url || "";
+        if (url) {
+          const canonical = canonicalUrl(url) || url;
+          pastFingerprints.set(canonical, checkpoint.id);
+        }
+      } catch {
+        // Skip damaged checkpoints
+      }
+    }
+    for (const item of readyItems) {
+      if (item.duplicateWarning) continue;
+      const url = item.offerSnapshot?.url || canonicalUrl(item.offer) || "";
+      if (!url) continue;
+      const canonical = canonicalUrl(url) || url;
+      if (pastFingerprints.has(canonical)) {
+        item.duplicateWarning = "Candidature deja preparee pour cette offre (URL identique dans l'historique).";
+      }
+    }
+  } catch {
+    // Checkpoint directory may not exist yet
+  }
+}
+
 function notifyBundleAnalysisFinished(job) {
   if (!job.bundleId || job.bundleCompletionNotified) return;
   job.bundleCompletionNotified = true;
@@ -3454,6 +3526,7 @@ function notifyBundleAnalysisFinished(job) {
     if (activeBundleId === bundle.id) activeBundleId = null;
     return;
   }
+  detectBundleContentDuplicates(bundle);
   bundle.state = "needs_input";
   bundle.stage = "review";
   const itemLabel = bundle.sourceType === "spontaneous" ? "cible" : "offre";
@@ -4232,10 +4305,10 @@ async function route(request, response) {
         }));
       } else {
         if (!Array.isArray(body.offers)) throw new Error("Colle plusieurs liens, un par ligne.");
-        const offers = [...new Set(body.offers.map((offer) => typeof offer === "string" ? offer.trim() : "").filter(Boolean))];
-        if (offers.length < 2) throw new Error("Un bundle doit contenir au moins 2 liens différents.");
-        if (offers.length > MAX_BUNDLE_ITEMS) throw new Error(`Un bundle peut contenir au maximum ${MAX_BUNDLE_ITEMS} liens.`);
-        for (const offer of offers) {
+        const rawOffers = body.offers.map((offer) => typeof offer === "string" ? offer.trim() : "").filter(Boolean);
+        const offers = [];
+        const seenCanonical = new Map();
+        for (const offer of rawOffers) {
           let parsed;
           try {
             parsed = new URL(offer);
@@ -4243,7 +4316,15 @@ async function route(request, response) {
             throw new Error(`Lien invalide : ${offer.slice(0, 100)}`);
           }
           if (!["http:", "https:"].includes(parsed.protocol)) throw new Error("Les bundles acceptent uniquement des liens http ou https.");
+          const canonical = canonicalUrl(offer) || offer;
+          if (seenCanonical.has(canonical)) {
+            throw new Error(`Le lien "${offer.slice(0, 80)}" est un doublon du poste ${seenCanonical.get(canonical) + 1} (URL identique ou paramètres de tracking différents).`);
+          }
+          seenCanonical.set(canonical, offers.length);
+          offers.push(offer);
         }
+        if (offers.length < 2) throw new Error("Un bundle doit contenir au moins 2 liens différents.");
+        if (offers.length > MAX_BUNDLE_ITEMS) throw new Error(`Un bundle peut contenir au maximum ${MAX_BUNDLE_ITEMS} liens.`);
         items = offers.map((offer, index) => ({
           id: randomUUID(),
           index,

@@ -3038,6 +3038,9 @@ function renderBundleResults(bundle) {
       createTextElement("strong", "", `${company} | ${role}`),
       createTextElement("small", "", status)
     );
+    if (item.duplicateWarning) {
+      copy.append(createTextElement("small", "bundle-item-warning", `⚠️ ${item.duplicateWarning}`));
+    }
     row.append(copy);
     if (item.result) {
       const downloads = document.createElement("div");
@@ -3263,6 +3266,18 @@ function setLinkError(index, message) {
   if (error) error.textContent = message;
 }
 
+function canonicalUrlClient(value) {
+  try {
+    const url = new URL(value);
+    url.hash = "";
+    ["gh_jid", "lever-source", "source", "src", "ref", "referrer", "utm_campaign", "utm_content", "utm_medium", "utm_source", "utm_term"].forEach((p) => url.searchParams.delete(p));
+    url.pathname = url.pathname.replace(/\/+$/, "") || "/";
+    return url.toString();
+  } catch {
+    return value;
+  }
+}
+
 function validateLinkOffers() {
   offerLinks.forEach((_, index) => clearLinkError(index));
   const values = offerLinks.map((value) => value.trim());
@@ -3275,10 +3290,13 @@ function validateLinkOffers() {
       message = index === 0 ? "Ajoute le lien du poste à analyser." : "Ajoute un lien ou supprime ce poste.";
     } else if (!isHttpUrl(value)) {
       message = "Utilise un lien complet commençant par http:// ou https://.";
-    } else if (seen.has(value)) {
-      message = `Ce lien est déjà utilisé pour le poste ${seen.get(value) + 1}.`;
     } else {
-      seen.set(value, index);
+      const canonical = canonicalUrlClient(value);
+      if (seen.has(canonical)) {
+        message = `Ce lien est déjà utilisé pour le poste ${seen.get(canonical) + 1} (URL identique ou paramètres différents).`;
+      } else {
+        seen.set(canonical, index);
+      }
     }
     if (message) {
       setLinkError(index, message);

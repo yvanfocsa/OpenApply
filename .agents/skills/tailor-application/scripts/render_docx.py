@@ -75,7 +75,8 @@ def convert_to_pdf(docx_path: Path, output_dir: Path) -> Path:
     pdf_path = output_dir / f"{docx_path.stem}.pdf"
     if pdf_path.exists():
         pdf_path.unlink()
-    temp_root = Path("/private/tmp") if sys.platform == "darwin" and Path("/private/tmp").is_dir() else None
+    temp_root = output_dir / "tmp"
+    temp_root.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="openapply-lo-", dir=temp_root) as profile:
         profile_uri = Path(profile).resolve().as_uri()
         base = [

@@ -108,7 +108,7 @@ function safeDate(value) {
   return Number.isNaN(date.getTime()) ? "" : date.toISOString();
 }
 
-function canonicalUrl(value) {
+export function canonicalUrl(value) {
   try {
     const parsed = new URL(String(value || ""));
     parsed.hash = "";
