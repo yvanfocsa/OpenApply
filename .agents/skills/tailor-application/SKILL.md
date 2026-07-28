@@ -61,7 +61,8 @@ python .agents/skills/tailor-application/scripts/verify_pack.py \
   --letter-template <source-letter.docx> \
   --letter-docx <generated-letter.docx> \
   --letter-pdf <required-letter.pdf> \
-  --letter-qa-dir <application-dir>/qa-letter
+  --letter-qa-dir <application-dir>/qa-letter \
+  --language <fr|en>
 ```
 
 Both PDFs and both QA directories must succeed. Never solve overflow by shrinking fonts, margins, page size, or spacing. Shorten only editable content.

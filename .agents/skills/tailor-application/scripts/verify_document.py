@@ -42,7 +42,36 @@ def media_hashes(docx_path: Path) -> dict[str, str]:
         }
 
 
-def validate_structure(template_path: Path, docx_path: Path) -> None:
+FORBIDDEN_FRENCH_IN_ENGLISH = [
+    "alternance",
+    "candidature",
+    "objet :",
+    "madame,",
+    "monsieur,",
+    "salutations distinguées",
+]
+
+FORBIDDEN_ENGLISH_IN_FRENCH = [
+    "dear hiring manager",
+    "permanent position",
+]
+
+
+def check_language_purity(doc: Document, language: str = "auto") -> None:
+    full_text = "\n".join(p.text for p in doc.paragraphs).lower()
+    is_english = language == "en" or ("profile" in full_text and "professional experience" in full_text)
+    is_french = language == "fr" or ("profil" in full_text and "expériences professionnelles" in full_text)
+    if is_english:
+        for forbidden in FORBIDDEN_FRENCH_IN_ENGLISH:
+            if forbidden in full_text:
+                raise RuntimeError(f"Language purity check failed: French term '{forbidden}' found in English document")
+    elif is_french:
+        for forbidden in FORBIDDEN_ENGLISH_IN_FRENCH:
+            if forbidden in full_text:
+                raise RuntimeError(f"Language purity check failed: English term '{forbidden}' found in French document")
+
+
+def validate_structure(template_path: Path, docx_path: Path, language: str = "auto") -> None:
     if template_path.resolve() == docx_path.resolve():
         raise RuntimeError("The generated document must not overwrite its source template")
     source = Document(template_path)
@@ -59,6 +88,7 @@ def validate_structure(template_path: Path, docx_path: Path) -> None:
         raise RuntimeError("Embedded photo or drawing element was removed from document structure")
     if media_hashes(docx_path) != media_hashes(template_path):
         raise RuntimeError("Embedded images or media changed")
+    check_language_purity(generated, language)
 
 
 def main() -> int:
@@ -68,13 +98,14 @@ def main() -> int:
     parser.add_argument("--pdf", type=Path, required=True)
     parser.add_argument("--qa-dir", type=Path, required=True)
     parser.add_argument("--label", default="document")
+    parser.add_argument("--language", default="auto")
     args = parser.parse_args()
 
     template_path = args.template.expanduser().resolve()
     docx_path = args.docx.expanduser().resolve()
     if not template_path.is_file() or not docx_path.is_file():
         raise SystemExit(f"Missing source or generated DOCX for {args.label}")
-    validate_structure(template_path, docx_path)
+    validate_structure(template_path, docx_path, args.language)
 
     qa_dir = args.qa_dir.expanduser().resolve()
     qa_dir.mkdir(parents=True, exist_ok=True)

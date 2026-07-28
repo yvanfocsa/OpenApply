@@ -28,12 +28,13 @@ def main() -> int:
     parser.add_argument("--letter-docx", type=Path, required=True)
     parser.add_argument("--letter-pdf", type=Path, required=True)
     parser.add_argument("--letter-qa-dir", type=Path, required=True)
+    parser.add_argument("--language", default="auto")
     args = parser.parse_args()
 
     verifier = Path(__file__).with_name("verify_document.py")
     commands = [
-        [sys.executable, str(verifier), "--template", str(args.cv_template.resolve()), "--docx", str(args.cv_docx.resolve()), "--pdf", str(args.cv_pdf.resolve()), "--qa-dir", str(args.cv_qa_dir.resolve()), "--label", "CV"],
-        [sys.executable, str(verifier), "--template", str(args.letter_template.resolve()), "--docx", str(args.letter_docx.resolve()), "--pdf", str(args.letter_pdf.resolve()), "--qa-dir", str(args.letter_qa_dir.resolve()), "--label", "cover letter"],
+        [sys.executable, str(verifier), "--template", str(args.cv_template.resolve()), "--docx", str(args.cv_docx.resolve()), "--pdf", str(args.cv_pdf.resolve()), "--qa-dir", str(args.cv_qa_dir.resolve()), "--label", "CV", "--language", args.language],
+        [sys.executable, str(verifier), "--template", str(args.letter_template.resolve()), "--docx", str(args.letter_docx.resolve()), "--pdf", str(args.letter_pdf.resolve()), "--qa-dir", str(args.letter_qa_dir.resolve()), "--label", "cover letter", "--language", args.language],
     ]
     with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
         futures = [executor.submit(run, command) for command in commands]
