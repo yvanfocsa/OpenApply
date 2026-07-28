@@ -55,6 +55,8 @@ def validate_structure(template_path: Path, docx_path: Path) -> None:
         raise RuntimeError("Top-level paragraph count changed")
     if len(generated.tables) != len(source.tables):
         raise RuntimeError("Table count changed")
+    if len(generated._element.xpath(".//w:drawing")) != len(source._element.xpath(".//w:drawing")):
+        raise RuntimeError("Embedded photo or drawing element was removed from document structure")
     if media_hashes(docx_path) != media_hashes(template_path):
         raise RuntimeError("Embedded images or media changed")
 

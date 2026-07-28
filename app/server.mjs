@@ -2437,7 +2437,7 @@ function buildPrompt(
 - Never claim that the company is hiring or needs a specific competency.
 - Use only current company facts verified on the supplied reference URL. If the page is missing or inaccessible, write a precise candidate-led motivation without inventing company projects, values, clients, technologies, or strategy.
 - Use the candidate angle only as the user’s desired positioning, not as evidence about the company.
-- Make the CV title and profile align with the target role while staying inside verified candidate facts.
+- Make the CV title and profile align with the target role while staying inside verified candidate facts. Never append contract tags (e.g. "CANDIDATURE CDI", "CANDIDATURE ALTERNANCE", "PERMANENT POSITION") to the CV title header.
 - Return the explicitly selected contract type.`
     : `- Make a reasonable contract choice in auto mode. If the vacancy is neither CDI nor alternance, return an error instead of converting it.`;
   const sourceLabel = spontaneous ? "spontaneous-application-target" : "vacancy";
@@ -2451,6 +2451,8 @@ When a cached-page-snapshot is present, reuse it. Fetch source-url or reference-
 Requirements:
 - Never use the em dash character in the CV, cover letter, file metadata, summary, or interface text. Prefer commas, colons, parentheses, or a short hyphen only when grammatically necessary.
 - Follow the local tailor-application skill. Use only the facts in the candidate-profile block and never read another profile under ${PROFILES_DIR}.
+- Never append contract mentions (e.g. "CANDIDATURE CDI", "CANDIDATURE ALTERNANCE", "PERMANENT POSITION") to the CV title header; keep the CV title concise and focused only on the target position so it fits on a single line next to the photo without overflow.
+- When editing DOCX paragraphs in Python, always modify specific run.text attributes in-place. Never reassign paragraph.text = ... on existing paragraphs, as this destroys run formatting (bold, italics), tab alignments, and embedded media (such as the candidate photo in P[0]).
 - Use ${templates.cvFr} for a French CV and ${existsSync(templates.cvEn) ? templates.cvEn : templates.cvFr} for an English CV. Use ${templates.coverLetter} for the letter.
 - Preserve the selected DOCX references, including their portrait, page geometry, styles, margins, spacing, sections, and visual hierarchy. Create a unique new output directory under ${outputDirectory} named after the target company and role (e.g. generated/<Company>_<Role>); never overwrite a previous generated application.
 - Produce a tailored CV and a tailored cover letter, each in DOCX and PDF. The PDF files MUST strictly be named ${pdfNames.cvPdfName} and ${pdfNames.letterPdfName}. Do not use any other name for the PDF files.

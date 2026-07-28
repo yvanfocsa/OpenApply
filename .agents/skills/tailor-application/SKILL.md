@@ -32,7 +32,7 @@ A professional, supervised professional, project, knowledge, or none answer must
 3. Inspect the DOCX structure before editing: sections, paragraphs, tables, styles, media, headers, footers, hyperlinks, and page geometry.
 4. Create a unique directory below the exact profile output directory supplied by the prompt. Never overwrite a template or an earlier application.
 5. Copy each source DOCX into the new directory, then edit only the copies.
-6. Tailor the title, summary, skills, experience wording, and project emphasis using verified facts. Preserve employers, dates, education, contact details, visual hierarchy, styles, margins, columns, tables, media, and section order.
+6. Tailor the title, summary, skills, experience wording, and project emphasis using verified facts. Never append contract tags (such as "CANDIDATURE CDI", "CANDIDATURE ALTERNANCE", or "PERMANENT POSITION") to the CV title/header; keep the title strictly focused on the target role/job title so it fits cleanly next to the candidate photo without overflow. Preserve employers, dates, education, contact details, visual hierarchy, styles, margins, columns, tables, media, and section order.
 7. Write a specific cover letter that connects verified candidate evidence to the target. For a spontaneous application, never imply that a vacancy exists.
 8. Set document metadata to the current candidate and target. Do not leave stale employer or candidate metadata from an earlier document.
 9. Produce CV and cover letter in DOCX and PDF with the exact filenames required by the prompt.
@@ -42,9 +42,9 @@ A professional, supervised professional, project, knowledge, or none answer must
 
 ## Generic document editing
 
-Templates can come from any profession and may use paragraphs or tables. Do not assume fixed paragraph indexes. Identify sections from their visible headings and surrounding structure. Prefer minimal in-place text edits that retain existing run and paragraph properties. When a field cannot be safely identified, preserve it instead of guessing.
+Templates can come from any profession and may use paragraphs or tables. Do not assume fixed paragraph indexes. Identify sections from their visible headings and surrounding structure. Prefer minimal in-place text edits that retain existing run and paragraph properties. When a field cannot be safely identified, preserve it instead of guessing. Never append contract mentions (e.g. "CANDIDATURE CDI") to the CV title line. Never reassign `paragraph.text = ...` on existing paragraphs, as this destroys run formatting (bold, italics), tab stops, and embedded media (such as the candidate photo anchored in P[0]). Always update specific `run.text` elements in-place.
 
-The verification script compares the generated document with its source template and refuses changes to page geometry, section count, paragraph count, table count, or embedded media. This protects photos, logos, and layout while allowing factual text tailoring.
+The verification script compares the generated document with its source template and refuses changes to page geometry, section count, paragraph count, table count, drawing elements (photos), or embedded media. This protects photos, logos, and layout while allowing factual text tailoring.
 
 ## One-page verification
 
