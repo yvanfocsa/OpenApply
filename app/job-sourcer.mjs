@@ -2,6 +2,10 @@ import { createHash } from "node:crypto";
 import http from "node:http";
 import https from "node:https";
 import { URL } from "node:url";
+import {
+  resolvePublicAddress,
+  validatePublicHttpUrl,
+} from "./backend-guards.mjs";
 import { classifyJob } from "./job-classifier.mjs";
 
 export const SOURCING_PROVIDERS = [
@@ -774,62 +778,77 @@ function structuredJobText(html) {
   return "";
 }
 
-function isPrivateHostname(hostname) {
-  const host = String(hostname || "").replace(/^\[|\]$/g, "").toLowerCase();
-  if (!host || host === "localhost" || host.endsWith(".localhost") || host.endsWith(".local")) return true;
-  if (host === "::1" || host.startsWith("fe80:") || host.startsWith("fc") || host.startsWith("fd")) return true;
-  const parts = host.split(".").map(Number);
-  if (parts.length !== 4 || parts.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) return false;
-  return parts[0] === 10
-    || parts[0] === 127
-    || parts[0] === 0
-    || parts[0] === 169 && parts[1] === 254
-    || parts[0] === 192 && parts[1] === 168
-    || parts[0] === 172 && parts[1] >= 16 && parts[1] <= 31;
-}
+export async function fetchUrlText(urlString, timeoutMs = 7_000, redirectCount = 0) {
+  if (redirectCount > 4) throw new Error("Trop de redirections.");
+  const safeUrl = validatePublicHttpUrl(urlString, { label: "Le lien de l’offre" });
+  const parsed = new URL(safeUrl);
+  const resolved = await resolvePublicAddress(parsed.hostname);
+  const transport = parsed.protocol === "https:" ? https : http;
+  const maximumBytes = 2_000_000;
 
-function fetchUrlText(urlString, timeoutMs = 7_000, redirectCount = 0) {
   return new Promise((resolve, reject) => {
-    try {
-      if (redirectCount > 4) throw new Error("Trop de redirections.");
-      const parsed = new URL(urlString);
-      if (!["http:", "https:"].includes(parsed.protocol)) throw new Error("Protocole non autorisé.");
-      if (isPrivateHostname(parsed.hostname)) throw new Error("Adresse locale ou privée non autorisée.");
-      const transport = parsed.protocol === "https:" ? https : http;
-      const request = transport.get(
-        parsed,
-        {
-          headers: {
-            Accept: "text/html,application/xhtml+xml",
-            "User-Agent": "OpenApply/1.0",
-          },
-          timeout: timeoutMs,
+    let settled = false;
+    const finish = (error, value = "") => {
+      if (settled) return;
+      settled = true;
+      if (error) reject(error);
+      else resolve(value);
+    };
+    const request = transport.get(
+      parsed,
+      {
+        headers: {
+          Accept: "text/html,application/xhtml+xml",
+          "User-Agent": "OpenApply/1.0",
         },
-        (response) => {
-          if (response.statusCode >= 300 && response.statusCode < 400 && response.headers.location) {
-            response.resume();
-            const target = new URL(response.headers.location, parsed).toString();
-            fetchUrlText(target, timeoutMs, redirectCount + 1).then(resolve, reject);
+        lookup: (_hostname, _options, callback) => callback(null, resolved.address, resolved.family),
+        timeout: timeoutMs,
+      },
+      (response) => {
+        if (response.statusCode >= 300 && response.statusCode < 400 && response.headers.location) {
+          response.resume();
+          let target;
+          try {
+            target = new URL(response.headers.location, parsed).toString();
+          } catch {
+            finish(new Error("Redirection invalide."));
             return;
           }
-          if (response.statusCode < 200 || response.statusCode >= 300) {
-            response.resume();
-            reject(new Error(`Réponse HTTP ${response.statusCode}.`));
-            return;
-          }
-          let body = "";
-          response.setEncoding("utf8");
-          response.on("data", (chunk) => {
-            if (body.length < 2_000_000) body += chunk;
-          });
-          response.on("end", () => resolve(body));
+          fetchUrlText(target, timeoutMs, redirectCount + 1).then(
+            (value) => finish(null, value),
+            (error) => finish(error)
+          );
+          return;
         }
-      );
-      request.on("error", reject);
-      request.on("timeout", () => request.destroy(new Error("Délai réseau dépassé.")));
-    } catch (error) {
-      reject(error);
-    }
+        if (response.statusCode < 200 || response.statusCode >= 300) {
+          response.resume();
+          finish(new Error(`Réponse HTTP ${response.statusCode}.`));
+          return;
+        }
+        const announcedLength = Number(response.headers["content-length"] || 0);
+        if (Number.isFinite(announcedLength) && announcedLength > maximumBytes) {
+          response.destroy();
+          finish(new Error("Page de l’offre trop volumineuse."));
+          return;
+        }
+        let receivedBytes = 0;
+        const chunks = [];
+        response.on("data", (chunk) => {
+          const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+          receivedBytes += buffer.length;
+          if (receivedBytes > maximumBytes) {
+            response.destroy();
+            finish(new Error("Page de l’offre trop volumineuse."));
+            return;
+          }
+          chunks.push(buffer);
+        });
+        response.on("error", (error) => finish(error));
+        response.on("end", () => finish(null, Buffer.concat(chunks).toString("utf8")));
+      }
+    );
+    request.on("error", (error) => finish(error));
+    request.on("timeout", () => request.destroy(new Error("Délai réseau dépassé.")));
   });
 }
 

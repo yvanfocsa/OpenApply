@@ -55,6 +55,10 @@ import {
   preferredInstalledOllamaModel,
 } from "./ollama-provider.mjs";
 import { createProfileCandidateExtensionPack } from "./extension-pack.mjs";
+import {
+  atomicWriteFile,
+  validatePublicHttpUrl,
+} from "./backend-guards.mjs";
 
 const APP_DIR = path.dirname(fileURLToPath(import.meta.url));
 const ROOT_DIR = path.resolve(APP_DIR, "..");
@@ -77,7 +81,10 @@ const ERRORS_DIR = path.join(ROOT_DIR, "errors");
 const RESPONSE_SCHEMA = path.join(APP_DIR, "response.schema.json");
 const ANALYSIS_SCHEMA = path.join(APP_DIR, "analysis.schema.json");
 const HOST = "127.0.0.1";
-const PORT = Number.parseInt(process.env.PORT || "4173", 10);
+const REQUESTED_PORT = Number.parseInt(process.env.PORT || "4173", 10);
+const PORT = Number.isInteger(REQUESTED_PORT) && REQUESTED_PORT >= 1 && REQUESTED_PORT <= 65_535
+  ? REQUESTED_PORT
+  : 4173;
 const CODEX_BIN = process.env.CODEX_BIN || "codex";
 const COPILOT_BIN = process.env.COPILOT_BIN || "copilot";
 const HERMES_BIN = process.env.HERMES_BIN || "hermes";
@@ -113,10 +120,12 @@ const applicationStatuses = new Map();
 const applicationStatusUpdatedAt = new Map();
 let activeJobId = null;
 let activeBundleId = null;
+let processingReservation = null;
 let jobWatchTimer = null;
 const jobWatchScans = new Map();
 let runtimeStatusCache = null;
 const providerConnectionProcesses = new Map();
+let vaultKeyPromise = null;
 
 const DEFAULT_PROFILE_ID = "local-profile";
 const PROVIDERS = {
@@ -423,6 +432,21 @@ function slugify(value, fallback = "profil") {
   return normalized || fallback;
 }
 
+function hasActiveProcessing() {
+  return Boolean(activeJobId || activeBundleId || processingReservation);
+}
+
+function reserveProcessing(kind) {
+  if (hasActiveProcessing()) return "";
+  const token = `${kind}:${randomUUID()}`;
+  processingReservation = token;
+  return token;
+}
+
+function releaseProcessingReservation(token) {
+  if (processingReservation === token) processingReservation = null;
+}
+
 function safeProviderModel(value) {
   const model = String(value || "").trim();
   return /^[a-z0-9][a-z0-9._:/-]{0,159}$/i.test(model) ? model : "";
@@ -484,7 +508,11 @@ function cloneJson(value) {
 
 function safeErrorText(value) {
   return String(value || "")
+    .replace(/((?:api[_-]?key|access[_-]?token|client[_-]?secret|authorization)\s*[=:]\s*)[^\s,;]+/gi, "$1[SECRET MASQUÉ]")
+    .replace(/([?&](?:api[_-]?key|key|token|access[_-]?token|client[_-]?secret)=)[^&#\s]+/gi, "$1[SECRET MASQUÉ]")
     .replace(/(?:sk|pk|api|key|token)[-_][a-z0-9_-]{12,}/gi, "[SECRET MASQUÉ]")
+    .replace(/AIza[a-z0-9_-]{20,}/gi, "[SECRET MASQUÉ]")
+    .replace(/gh[pousr]_[a-z0-9]{20,}/gi, "[SECRET MASQUÉ]")
     .replace(/bearer\s+[a-z0-9._~-]+/gi, "Bearer [SECRET MASQUÉ]")
     .replace(/[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/gi, "[EMAIL MASQUÉ]")
     .replaceAll("\u2014", "-")
@@ -559,7 +587,7 @@ async function persistJobCheckpoint(job) {
   if (!job?.id) return;
   try {
     await mkdir(CHECKPOINT_DIR, { recursive: true });
-    await writeFile(checkpointPath(job.id), `${JSON.stringify(checkpointPayload(job), null, 2)}\n`, "utf8");
+    await atomicWriteFile(checkpointPath(job.id), `${JSON.stringify(checkpointPayload(job), null, 2)}\n`, "utf8");
   } catch {
     // A checkpoint failure must not interrupt document generation.
   }
@@ -576,8 +604,11 @@ async function restoreIncompleteCheckpoints() {
         if (!payload?.id || jobs.has(payload.id) || !profileById(payload.profileId)) continue;
         if (payload.state === "completed" || payload.state === "canceled") continue;
         const interrupted = ["queued", "running"].includes(payload.state);
+        const orphanedBundleJob = Boolean(payload.bundleId && !bundles.has(payload.bundleId));
         const restored = {
           ...payload,
+          bundleId: orphanedBundleJob ? null : payload.bundleId || null,
+          bundleItemId: orphanedBundleJob ? null : payload.bundleItemId || null,
           providerModel: safeProviderModel(payload.providerModel),
           state: payload.state === "needs_input" ? "needs_input" : "failed",
           stage: payload.state === "needs_input" ? "review" : "failed",
@@ -585,7 +616,9 @@ async function restoreIncompleteCheckpoints() {
             ? payload.message
             : "Traitement interrompu, reprise disponible",
           error: interrupted
-            ? "Le serveur local s’est arrêté pendant le traitement. Reprends depuis le dernier checkpoint."
+            ? orphanedBundleJob
+              ? "Le serveur local s’est arrêté pendant un lot. Cette candidature peut être reprise séparément depuis son dernier checkpoint."
+              : "Le serveur local s’est arrêté pendant le traitement. Reprends depuis le dernier checkpoint."
             : payload.error || "Traitement interrompu.",
           failureKind: interrupted ? "interrupted" : payload.failureKind || "provider",
           result: payload.kind === "analysis" ? payload.analysis || null : null,
@@ -658,8 +691,8 @@ ${report.failureKind}
 ${report.stderr.length ? report.stderr.map((line) => `- ${line}`).join("\n") : "Aucune sortie technique."}
 `;
     await Promise.all([
-      writeFile(jsonPath, `${JSON.stringify(report, null, 2)}\n`, "utf8"),
-      writeFile(markdownPath, markdown, "utf8"),
+      atomicWriteFile(jsonPath, `${JSON.stringify(report, null, 2)}\n`, "utf8"),
+      atomicWriteFile(markdownPath, markdown, "utf8"),
     ]);
     if (job) {
       job.errorReport = {
@@ -698,6 +731,92 @@ function scheduleSlowReport(job) {
   job.slowTimer.unref();
 }
 
+function boundedString(value, label, maxLength, { required = true } = {}) {
+  if (typeof value !== "string") throw new Error(`${label} est invalide.`);
+  const text = value.trim();
+  if (required && !text) throw new Error(`${label} est vide.`);
+  if (text.length > maxLength) throw new Error(`${label} dépasse la taille autorisée.`);
+  return text;
+}
+
+function validatedAnalysisPayload(payload, { mode = "auto", language = "auto" } = {}) {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    throw new Error("Le résultat d’analyse n’est pas un objet valide.");
+  }
+  if (!["success", "error"].includes(payload.status)) throw new Error("Le statut de l’analyse est invalide.");
+  const contractType = mode !== "auto" ? mode : payload.contractType;
+  const selectedLanguage = language !== "auto" ? language : payload.language;
+  if (payload.status === "success" && !["cdi", "alternance"].includes(contractType)) {
+    throw new Error("Le type de contrat n’a pas pu être identifié.");
+  }
+  if (!["fr", "en"].includes(selectedLanguage)) throw new Error("La langue de l’offre n’a pas pu être identifiée.");
+  const matchedStrengths = Array.isArray(payload.matchedStrengths) ? payload.matchedStrengths : null;
+  const questions = Array.isArray(payload.questions) ? payload.questions : null;
+  if (!matchedStrengths || matchedStrengths.length > 8 || !questions || questions.length > 6) {
+    throw new Error("L’analyse des compétences est incomplète ou trop volumineuse.");
+  }
+  const validStrengthLevels = new Set(["professional", "professional_guided", "project", "knowledge"]);
+  for (const strength of matchedStrengths) {
+    boundedString(strength?.requirement, "Une compétence correspondante", 180);
+    boundedString(strength?.evidence, "Une preuve de compétence", 800);
+    if (!validStrengthLevels.has(strength?.level)) throw new Error("Un niveau de compétence est invalide.");
+  }
+  const ids = new Set();
+  for (const question of questions) {
+    if (!/^[a-z0-9][a-z0-9-]{0,48}$/.test(question?.id || "") || ids.has(question.id)) {
+      throw new Error("Les questions de compétences sont invalides.");
+    }
+    ids.add(question.id);
+    boundedString(question.requirement, "Une compétence à confirmer", 180);
+    boundedString(question.category, "Une catégorie de compétence", 80);
+    boundedString(question.whyItMatters, "La justification d’une compétence", 600);
+    boundedString(question.verifiedAlternative, "Une alternative vérifiée", 500, { required: false });
+    boundedString(question.alternativeReason, "La justification d’une alternative", 500, { required: false });
+    boundedString(question.suggestedPhrasing, "Une formulation suggérée", 500, { required: false });
+  }
+  return {
+    ...payload,
+    contractType,
+    language: selectedLanguage,
+    company: boundedString(payload.company, "L’entreprise", 180, { required: false }),
+    role: boundedString(payload.role, "Le poste", 220, { required: false }),
+    location: boundedString(payload.location, "Le lieu", 180, { required: false }),
+    summary: boundedString(payload.summary, "Le résumé", 2_000, { required: false }),
+    error: boundedString(payload.error, "Le message d’erreur", 4_000, { required: false }),
+  };
+}
+
+function validatedGenerationPayload(payload, job) {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    throw new Error("Le résultat de génération n’est pas un objet valide.");
+  }
+  if (payload.status !== "success") {
+    throw new Error(boundedString(payload.error || "La candidature n’a pas pu être générée.", "Le message d’erreur", 4_000));
+  }
+  if (!["cdi", "alternance"].includes(payload.contractType)) {
+    throw new Error("Le moteur n’a pas renvoyé un type de contrat valide.");
+  }
+  if (job.mode !== "auto" && payload.contractType !== job.mode) {
+    throw new Error("Les documents générés ne respectent pas le type de contrat choisi.");
+  }
+  if (!["fr", "en"].includes(payload.language)) {
+    throw new Error("Le moteur n’a pas renvoyé une langue de candidature valide.");
+  }
+  if (job.language !== "auto" && payload.language !== job.language) {
+    throw new Error("Les documents générés ne respectent pas la langue choisie.");
+  }
+  if (!Array.isArray(payload.omittedRequirements) || payload.omittedRequirements.length > 3) {
+    throw new Error("La liste des exigences omises est invalide.");
+  }
+  payload.omittedRequirements.forEach((item) => boundedString(item, "Une exigence omise", 300));
+  return {
+    ...payload,
+    company: boundedString(payload.company, "L’entreprise", 180),
+    role: boundedString(payload.role, "Le poste", 220),
+    summary: boundedString(payload.summary, "Le résumé", 2_000),
+  };
+}
+
 async function saveAnalysisCache() {
   await mkdir(path.dirname(ANALYSIS_CACHE_FILE), { recursive: true });
   const entries = [...analysisCache.entries()]
@@ -707,7 +826,7 @@ async function saveAnalysisCache() {
     })
     .slice(-100)
     .map(([key, entry]) => ({ key, ...entry }));
-  await writeFile(ANALYSIS_CACHE_FILE, `${JSON.stringify({ version: 1, entries }, null, 2)}\n`, "utf8");
+  await atomicWriteFile(ANALYSIS_CACHE_FILE, `${JSON.stringify({ version: 1, entries }, null, 2)}\n`, "utf8");
 }
 
 async function loadAnalysisCache() {
@@ -717,7 +836,12 @@ async function loadAnalysisCache() {
     for (const entry of entries) {
       const cachedAt = Date.parse(entry?.cachedAt);
       if (!entry?.key || !entry?.result || !Number.isFinite(cachedAt) || Date.now() - cachedAt >= ANALYSIS_CACHE_TTL_MS) continue;
-      analysisCache.set(entry.key, { cachedAt: entry.cachedAt, result: entry.result });
+      try {
+        const result = validatedAnalysisPayload(entry.result);
+        if (result.status === "success") analysisCache.set(entry.key, { cachedAt: entry.cachedAt, result });
+      } catch {
+        // Ignore malformed or manually altered cache entries.
+      }
     }
   } catch {
     // Le cache est une optimisation facultative et ne doit jamais bloquer l’application.
@@ -959,7 +1083,7 @@ async function publicProfile(profile, { includeFacts = false } = {}) {
 
 async function saveProfiles() {
   await mkdir(path.dirname(PROFILES_FILE), { recursive: true });
-  await writeFile(PROFILES_FILE, `${JSON.stringify(profileStore, null, 2)}\n`, "utf8");
+  await atomicWriteFile(PROFILES_FILE, `${JSON.stringify(profileStore, null, 2)}\n`, "utf8");
 }
 
 async function loadProfiles() {
@@ -967,7 +1091,12 @@ async function loadProfiles() {
     const parsed = JSON.parse(await readFile(PROFILES_FILE, "utf8"));
     const profiles = Array.isArray(parsed.profiles) ? parsed.profiles : [];
     const sanitized = profiles
-      .filter((profile) => profile && typeof profile.id === "string" && typeof profile.name === "string")
+      .filter((profile) => (
+        profile
+        && typeof profile.id === "string"
+        && /^[a-z0-9][a-z0-9-]{0,79}$/.test(profile.id)
+        && typeof profile.name === "string"
+      ))
       .map((profile) => ({
         ...profile,
         initials: initialsFor(profile.name),
@@ -976,8 +1105,13 @@ async function loadProfiles() {
         providerModel: safeProviderModel(profile.providerModel),
         providerBaseUrl: String(profile.providerBaseUrl || "").trim().slice(0, 300),
       }));
+    const seenProfileIds = new Set();
     const usableProfiles = sanitized
-      .filter((profile) => profile.domains.length)
+      .filter((profile) => {
+        if (!profile.domains.length || seenProfileIds.has(profile.id)) return false;
+        seenProfileIds.add(profile.id);
+        return true;
+      })
       .map((profile) => ({ ...profile, builtIn: false }));
     const profilesToUse = usableProfiles.length ? usableProfiles : [defaultProfile];
     const requestedActiveId = typeof parsed.activeProfileId === "string" ? parsed.activeProfileId : "";
@@ -1003,14 +1137,22 @@ function providerSecretPath(profileId, providerId) {
 }
 
 async function vaultKey() {
-  await mkdir(SECRET_VAULT_DIR, { recursive: true });
-  try {
-    const key = await readFile(SECRET_VAULT_KEY);
-    if (key.length === 32) return key;
-  } catch {}
-  const key = randomBytes(32);
-  await writeFile(SECRET_VAULT_KEY, key, { mode: 0o600 });
-  return key;
+  if (!vaultKeyPromise) {
+    vaultKeyPromise = (async () => {
+      await mkdir(SECRET_VAULT_DIR, { recursive: true });
+      try {
+        const key = await readFile(SECRET_VAULT_KEY);
+        if (key.length === 32) return key;
+      } catch {}
+      const key = randomBytes(32);
+      await atomicWriteFile(SECRET_VAULT_KEY, key, { mode: 0o600 });
+      return key;
+    })().catch((error) => {
+      vaultKeyPromise = null;
+      throw error;
+    });
+  }
+  return vaultKeyPromise;
 }
 
 async function readVaultSecret(profileId, providerId) {
@@ -1051,7 +1193,7 @@ async function storeProviderSecret(profileId, providerId, secret) {
   const iv = randomBytes(12);
   const cipher = createCipheriv("aes-256-gcm", await vaultKey(), iv);
   const data = Buffer.concat([cipher.update(String(secret), "utf8"), cipher.final()]);
-  await writeFile(providerSecretPath(profileId, providerId), `${JSON.stringify({
+  await atomicWriteFile(providerSecretPath(profileId, providerId), `${JSON.stringify({
     iv: iv.toString("base64"),
     tag: cipher.getAuthTag().toString("base64"),
     data: data.toString("base64"),
@@ -1123,7 +1265,7 @@ function jobWatchSettings(profile) {
 
 async function saveJobWatchStore() {
   await mkdir(path.dirname(JOB_WATCH_FILE), { recursive: true });
-  await writeFile(JOB_WATCH_FILE, `${JSON.stringify(jobWatchStore, null, 2)}\n`, "utf8");
+  await atomicWriteFile(JOB_WATCH_FILE, `${JSON.stringify(jobWatchStore, null, 2)}\n`, "utf8");
 }
 
 function safeWatchFamilies(values) {
@@ -1826,20 +1968,24 @@ function compactOfferText(value) {
     .trim();
 }
 
+function validatedOfferText(value) {
+  const offer = compactOfferText(value);
+  if (/^https?:\/\/\S+$/i.test(offer)) {
+    return validatePublicHttpUrl(offer, {
+      label: "Le lien de l’offre",
+      maxLength: 2_000,
+    });
+  }
+  return offer;
+}
+
 function validateSpontaneousReferenceUrl(value) {
   const website = String(value || "").trim();
   if (!website) return "";
-  if (website.length > 500) throw new Error("Le lien de référence est trop long.");
-  let parsed;
-  try {
-    parsed = new URL(website);
-  } catch {
-    throw new Error("La page de candidature doit être un lien complet.");
-  }
-  if (!["http:", "https:"].includes(parsed.protocol)) {
-    throw new Error("Le lien de candidature doit commencer par http:// ou https://.");
-  }
-  return website;
+  return validatePublicHttpUrl(website, {
+    label: "La page de candidature",
+    maxLength: 500,
+  });
 }
 
 function validatedSpontaneousTarget(raw) {
@@ -1933,7 +2079,7 @@ async function saveApplicationCategories() {
     status: normalizeApplicationStatus(applicationStatuses.get(id)),
     statusUpdatedAt: applicationStatusUpdatedAt.get(id) || null,
   }));
-  await writeFile(
+  await atomicWriteFile(
     APPLICATION_LIBRARY_FILE,
     `${JSON.stringify({ version: 3, updatedAt: new Date().toISOString(), applications }, null, 2)}\n`,
     "utf8"
@@ -2060,6 +2206,22 @@ async function readJsonBody(request, maxBytes = MAX_BODY_BYTES) {
   }
 }
 
+async function readOptionalJsonBody(request, maxBytes = MAX_BODY_BYTES) {
+  let size = 0;
+  const chunks = [];
+  for await (const chunk of request) {
+    size += chunk.length;
+    if (size > maxBytes) throw new Error("La requête dépasse la taille maximale autorisée.");
+    chunks.push(chunk);
+  }
+  if (!size) return {};
+  try {
+    return JSON.parse(Buffer.concat(chunks).toString("utf8"));
+  } catch {
+    throw new Error("Requête JSON invalide.");
+  }
+}
+
 function uniqueProfileId(name) {
   const base = slugify(name);
   let id = base;
@@ -2073,11 +2235,38 @@ function decodeDocxUpload(upload, label) {
   const name = typeof upload.name === "string" ? upload.name : "";
   const data = typeof upload.data === "string" ? upload.data : "";
   if (!name.toLowerCase().endsWith(".docx")) throw new Error(`${label} doit être un fichier DOCX.`);
-  const base64 = data.includes(",") ? data.slice(data.indexOf(",") + 1) : data;
-  const buffer = Buffer.from(base64, "base64");
+  const base64 = (data.includes(",") ? data.slice(data.indexOf(",") + 1) : data).replace(/\s+/g, "");
+  if (!base64 || base64.length % 4 === 1 || !/^[a-z0-9+/]*={0,2}$/i.test(base64)) {
+    throw new Error(`${label} contient des données invalides.`);
+  }
+  const paddedBase64 = base64.padEnd(Math.ceil(base64.length / 4) * 4, "=");
+  const buffer = Buffer.from(paddedBase64, "base64");
   if (buffer.length < 100 || buffer.length > 6 * 1024 * 1024) throw new Error(`${label} est vide ou trop volumineux.`);
-  if (buffer[0] !== 0x50 || buffer[1] !== 0x4b) throw new Error(`${label} ne semble pas être un DOCX valide.`);
+  const hasZipHeader = buffer[0] === 0x50 && buffer[1] === 0x4b && buffer[2] === 0x03 && buffer[3] === 0x04;
+  const hasContentTypes = buffer.includes(Buffer.from("[Content_Types].xml"));
+  const hasWordDocument = buffer.includes(Buffer.from("word/document.xml"));
+  if (!hasZipHeader || !hasContentTypes || !hasWordDocument) {
+    throw new Error(`${label} ne semble pas être un DOCX Word valide.`);
+  }
   return buffer;
+}
+
+function validatedApiKey(value) {
+  const secret = typeof value === "string" ? value.trim() : "";
+  if (!secret) return "";
+  if (secret.length < 8 || secret.length > 4_096 || /[\r\n\u0000]/.test(secret)) {
+    throw new Error("La clé API doit contenir entre 8 et 4096 caractères, sans saut de ligne.");
+  }
+  return secret;
+}
+
+function validatedStoredSecret(value, label, maxLength = 4_096) {
+  const secret = typeof value === "string" ? value.trim() : "";
+  if (!secret) return "";
+  if (secret.length > maxLength || /[\r\n\u0000]/.test(secret)) {
+    throw new Error(`${label} est trop long ou contient un saut de ligne.`);
+  }
+  return secret;
 }
 
 async function saveProfileTemplates(profile, rawTemplates = {}) {
@@ -2302,7 +2491,7 @@ async function rememberConfirmedSkills(answers, profileId = DEFAULT_PROFILE_ID) 
   }
   const confirmationsPath = profileConfirmationsPath(profileId);
   await mkdir(path.dirname(confirmationsPath), { recursive: true });
-  await writeFile(
+  await atomicWriteFile(
     confirmationsPath,
     `${JSON.stringify({ version: 1, updatedAt: confirmedAt, skills: [...byRequirement.values()] }, null, 2)}\n`,
     "utf8"
@@ -2562,7 +2751,24 @@ async function validatedOutputPath(candidate, extension, profileId = DEFAULT_PRO
   return resolved;
 }
 
+async function validatedFileWithin(candidate, allowedDirectory, extension = "") {
+  if (typeof candidate !== "string" || (extension && !candidate.toLowerCase().endsWith(extension))) {
+    throw new Error("Fichier local invalide.");
+  }
+  const [resolved, allowedRoot] = await Promise.all([
+    realpath(path.resolve(candidate)),
+    realpath(allowedDirectory),
+  ]);
+  if (resolved !== allowedRoot && !resolved.startsWith(`${allowedRoot}${path.sep}`)) {
+    throw new Error("Fichier local hors du dossier autorisé.");
+  }
+  const info = await stat(resolved);
+  if (!info.isFile()) throw new Error("Fichier local introuvable.");
+  return { path: resolved, info };
+}
+
 async function verifiedSinglePageImage(applicationDir, letter) {
+  const applicationRoot = await realpath(applicationDir);
   const entries = await readdir(applicationDir, { withFileTypes: true });
   const qaDirectories = await Promise.all(entries.map(async (entry) => {
     if (!entry.isDirectory()) return null;
@@ -2575,11 +2781,19 @@ async function verifiedSinglePageImage(applicationDir, letter) {
     return { directory, modifiedAt: info.mtimeMs };
   }));
   qaDirectories.sort((first, second) => (second?.modifiedAt || 0) - (first?.modifiedAt || 0));
-  for (const entry of qaDirectories.filter(Boolean)) {
-    const files = await readdir(entry.directory);
-    const pageImages = files.filter((name) => /^page-\d+\.png$/i.test(name));
-    if (pageImages.length === 1 && pageImages[0].toLowerCase() === "page-1.png") {
-      return path.join(entry.directory, pageImages[0]);
+  const entry = qaDirectories.find(Boolean);
+  if (!entry) return null;
+  const files = await readdir(entry.directory);
+  const pageImages = files.filter((name) => /^page-\d+\.png$/i.test(name));
+  if (pageImages.length === 1 && pageImages[0].toLowerCase() === "page-1.png") {
+    try {
+      const pageImage = await realpath(path.join(entry.directory, pageImages[0]));
+      if (pageImage !== applicationRoot && pageImage.startsWith(`${applicationRoot}${path.sep}`)) {
+        const info = await stat(pageImage);
+        if (info.isFile()) return pageImage;
+      }
+    } catch {
+      // The latest visual check is stale or unsafe, so it cannot validate the document.
     }
   }
   return null;
@@ -2728,15 +2942,26 @@ async function restoreCompletedJobs() {
     candidates.sort((a, b) => a.modifiedAt - b.modifiedAt);
     for (const candidate of candidates) {
       try {
-        const parsed = JSON.parse(await readFile(candidate.filePath, "utf8"));
-        if (parsed.status !== "success") continue;
-        if (!["fr", "en"].includes(parsed.language)) continue;
+        const parsed = validatedGenerationPayload(
+          JSON.parse(await readFile(candidate.filePath, "utf8")),
+          { mode: "auto", language: "auto" }
+        );
         const profileId = applicationProfiles.get(candidate.id) || DEFAULT_PROFILE_ID;
         const profile = profileById(profileId) || defaultProfile;
         const docxPath = await validatedOutputPath(parsed.docxPath, ".docx", profile.id);
         const pdfPath = await validatedOutputPath(parsed.pdfPath, ".pdf", profile.id);
         const coverLetterDocxPath = await validatedOutputPath(parsed.coverLetterDocxPath, ".docx", profile.id);
         const coverLetterPdfPath = await validatedOutputPath(parsed.coverLetterPdfPath, ".pdf", profile.id);
+        const directories = new Set([
+          path.dirname(docxPath),
+          path.dirname(pdfPath),
+          path.dirname(coverLetterDocxPath),
+          path.dirname(coverLetterPdfPath),
+        ]);
+        if (directories.size !== 1) continue;
+        const applicationDirectory = path.dirname(pdfPath);
+        if (!(await hasVerifiedSinglePage(applicationDirectory, false))) continue;
+        if (!(await hasVerifiedSinglePage(applicationDirectory, true))) continue;
         const category = applicationCategories.get(candidate.id)
           || inferApplicationCategory(parsed, "auto", profile);
         const sourceType = applicationSourceTypes.get(candidate.id) || "offer";
@@ -2808,17 +3033,27 @@ async function finishJob(job, exitCode) {
 
   try {
     const raw = await readFile(job.resultFile, "utf8");
-    const parsed = JSON.parse(raw);
-    if (parsed.status !== "success") {
-      throw new Error(parsed.error || (job.sourceType === "spontaneous"
-        ? "La candidature spontanée n’a pas pu être générée."
-        : "Le poste n’est pas compatible avec les modes CDI ou alternance."));
-    }
-    if (!["fr", "en"].includes(parsed.language)) throw new Error("Le moteur n’a pas renvoyé une langue de candidature valide.");
+    const parsed = validatedGenerationPayload(JSON.parse(raw), job);
     const docxPath = await validatedOutputPath(parsed.docxPath, ".docx", profile.id);
     const pdfPath = await validatedOutputPath(parsed.pdfPath, ".pdf", profile.id);
     const coverLetterDocxPath = await validatedOutputPath(parsed.coverLetterDocxPath, ".docx", profile.id);
     const coverLetterPdfPath = await validatedOutputPath(parsed.coverLetterPdfPath, ".pdf", profile.id);
+    const applicationDirectories = new Set([
+      path.dirname(docxPath),
+      path.dirname(pdfPath),
+      path.dirname(coverLetterDocxPath),
+      path.dirname(coverLetterPdfPath),
+    ]);
+    if (applicationDirectories.size !== 1) {
+      throw new Error("Les quatre documents doivent provenir du même dossier de candidature.");
+    }
+    const applicationDirectory = path.dirname(pdfPath);
+    if (!(await hasVerifiedSinglePage(applicationDirectory, false))) {
+      throw new Error("Le CV n’a pas de contrôle visuel valide sur une page.");
+    }
+    if (!(await hasVerifiedSinglePage(applicationDirectory, true))) {
+      throw new Error("La lettre n’a pas de contrôle visuel valide sur une page.");
+    }
     job.result = { ...parsed, docxPath, pdfPath, coverLetterDocxPath, coverLetterPdfPath };
     job.category = inferApplicationCategory(job.result, job.category, profile, job.classification);
     updateStage(job, "packaging", "Contrôles LibreOffice terminés, préparation des deux packs");
@@ -2861,20 +3096,13 @@ async function finishAnalysis(job, exitCode) {
     return;
   }
   try {
-    const parsed = JSON.parse(await readFile(job.resultFile, "utf8"));
-    if (parsed.status !== "success") {
-      throw new Error(parsed.error || (job.sourceType === "spontaneous"
+    const rawResult = JSON.parse(await readFile(job.resultFile, "utf8"));
+    if (rawResult.status !== "success") {
+      throw new Error(rawResult.error || (job.sourceType === "spontaneous"
         ? "La cible de candidature spontanée n’a pas pu être analysée."
         : "Cette offre n’est pas compatible avec les modes CDI ou alternance."));
     }
-    if (!["cdi", "alternance"].includes(parsed.contractType)) throw new Error("Le type de contrat n’a pas pu être identifié.");
-    if (!["fr", "en"].includes(parsed.language)) throw new Error("La langue de l’offre n’a pas pu être identifiée.");
-    if (!Array.isArray(parsed.matchedStrengths) || !Array.isArray(parsed.questions)) throw new Error("L’analyse des compétences est incomplète.");
-    const ids = new Set();
-    for (const question of parsed.questions) {
-      if (!/^[a-z0-9][a-z0-9-]{0,48}$/.test(question.id) || ids.has(question.id)) throw new Error("Les questions de compétences sont invalides.");
-      ids.add(question.id);
-    }
+    const parsed = validatedAnalysisPayload(rawResult, { mode: job.mode, language: job.language });
     job.result = parsed;
     if (job.analysisCacheKey) {
       analysisCache.set(job.analysisCacheKey, {
@@ -3207,12 +3435,16 @@ async function startAnalysis(job) {
     ? cacheEntry.result
     : null;
   if (cached) {
-    job.result = cloneJson(cached);
+    job.result = validatedAnalysisPayload(cloneJson(cached), {
+      mode: job.mode,
+      language: job.language,
+    });
     job.state = "needs_input";
     updateStage(job, "review", cached.questions.length
       ? "Analyse identique retrouvée, confirme les compétences repérées"
       : "Analyse identique retrouvée, aucune compétence incertaine");
     releaseStandaloneJob(job);
+    await persistJobCheckpoint(job);
     queueMicrotask(() => notifyBundleAnalysisFinished(job));
     return;
   }
@@ -3686,6 +3918,35 @@ async function finalizeBundle(bundle) {
   if (activeBundleId === bundle.id) activeBundleId = null;
 }
 
+async function serveFile(request, response, filePath, {
+  contentType,
+  disposition = "attachment",
+  downloadName = path.basename(filePath),
+} = {}) {
+  try {
+    const info = await stat(filePath);
+    if (!info.isFile()) throw new Error("not a file");
+    response.writeHead(200, {
+      "Content-Type": contentType || "application/octet-stream",
+      "Content-Length": info.size,
+      "Content-Disposition": `${disposition}; filename="${String(downloadName).replaceAll('"', "")}"`,
+      "Cache-Control": "private, no-store",
+      "X-Content-Type-Options": "nosniff",
+    });
+    if (request.method === "HEAD") {
+      response.end();
+      return true;
+    }
+    const stream = createReadStream(filePath);
+    stream.on("error", () => response.destroy());
+    stream.pipe(response);
+    return true;
+  } catch {
+    if (!response.headersSent) sendJson(response, 404, { error: "Fichier indisponible." });
+    return false;
+  }
+}
+
 async function serveStatic(request, response, pathname) {
   const requested = pathname === "/" ? "index.html" : pathname.slice(1);
   const candidate = path.resolve(PUBLIC_DIR, requested);
@@ -3694,45 +3955,54 @@ async function serveStatic(request, response, pathname) {
     return;
   }
   try {
-    const info = await stat(candidate);
+    const [publicRoot, resolvedCandidate] = await Promise.all([
+      realpath(PUBLIC_DIR),
+      realpath(candidate),
+    ]);
+    if (resolvedCandidate !== publicRoot && !resolvedCandidate.startsWith(`${publicRoot}${path.sep}`)) {
+      sendJson(response, 403, { error: "Accès refusé." });
+      return;
+    }
+    const info = await stat(resolvedCandidate);
     if (!info.isFile()) throw new Error("not a file");
     setSecurityHeaders(response);
     response.writeHead(200, {
-      "Content-Type": MIME_TYPES.get(path.extname(candidate)) || "application/octet-stream",
+      "Content-Type": MIME_TYPES.get(path.extname(resolvedCandidate)) || "application/octet-stream",
       "Content-Length": info.size,
       "Cache-Control": "no-store",
       "X-Content-Type-Options": "nosniff",
     });
     if (request.method === "HEAD") response.end();
-    else createReadStream(candidate).pipe(response);
+    else createReadStream(resolvedCandidate).pipe(response);
   } catch {
     sendJson(response, 404, { error: "Ressource introuvable." });
   }
 }
 
 async function serveDocumentPreview(request, response, result, letter) {
-  const pdfPath = letter ? result.coverLetterPdfPath : result.pdfPath;
-  const previewPath = await verifiedSinglePageImage(path.dirname(pdfPath), letter);
-  if (!previewPath) {
-    sendJson(response, 404, { error: "Aperçu contrôlé indisponible." });
-    return;
+  try {
+    const pdfPath = letter ? result.coverLetterPdfPath : result.pdfPath;
+    const previewPath = await verifiedSinglePageImage(path.dirname(pdfPath), letter);
+    if (!previewPath) throw new Error("preview unavailable");
+    setSecurityHeaders(response);
+    await serveFile(request, response, previewPath, {
+      contentType: MIME_TYPES.get(".png"),
+      disposition: "inline",
+    });
+  } catch {
+    if (!response.headersSent) sendJson(response, 404, { error: "Aperçu contrôlé indisponible." });
   }
-  const info = await stat(previewPath);
-  setSecurityHeaders(response);
-  response.writeHead(200, {
-    "Content-Type": MIME_TYPES.get(".png"),
-    "Content-Length": info.size,
-    "Content-Disposition": `inline; filename="${path.basename(previewPath).replaceAll('"', "")}"`,
-    "Cache-Control": "private, no-store",
-    "X-Content-Type-Options": "nosniff",
-  });
-  if (request.method === "HEAD") response.end();
-  else createReadStream(previewPath).pipe(response);
 }
 
 async function route(request, response) {
-  const url = new URL(request.url || "/", `http://${request.headers.host || `${HOST}:${PORT}`}`);
-  const pathname = decodeURIComponent(url.pathname);
+  const url = new URL(request.url || "/", `http://${HOST}:${PORT}`);
+  let pathname;
+  try {
+    pathname = decodeURIComponent(url.pathname);
+  } catch {
+    sendJson(response, 400, { error: "Chemin de requête invalide." });
+    return;
+  }
 
   const providerConnectionMatch = pathname.match(/^\/api\/providers\/([a-z0-9-]+)\/connection$/i);
   if (providerConnectionMatch && request.method === "GET") {
@@ -3783,8 +4053,8 @@ async function route(request, response) {
         const currentStatus = await providerStatus(scopedProviderProfile(profile, provider.id));
         if (!currentStatus.installed) await launchProviderInstaller(profile, provider);
       } else if (flow?.mode === "api-key") {
-        const apiKey = typeof body.apiKey === "string" ? body.apiKey.trim() : "";
-        if (apiKey.length < 8 || apiKey.length > 1_024) throw new Error("Colle une clé API valide.");
+        const apiKey = validatedApiKey(body.apiKey);
+        if (!apiKey) throw new Error("Colle une clé API valide.");
         await storeProviderSecret(profile.id, provider.id, apiKey);
       } else {
         await launchProviderConnection(profile, provider);
@@ -3805,11 +4075,11 @@ async function route(request, response) {
   if (pathname === "/api/profiles" && request.method === "GET") {
     const profiles = await Promise.all(profileStore.profiles.map((profile) => publicProfile(profile, { includeFacts: true })));
     const activeProfile = getActiveProfile();
-    const status = await providerStatus(activeProfile);
     const statusEntries = await Promise.all(Object.keys(PROVIDERS).map(async (providerId) => {
       return [providerId, await providerStatus(scopedProviderProfile(activeProfile, providerId))];
     }));
     const providerStatuses = Object.fromEntries(statusEntries);
+    const status = providerStatuses[activeProfile.provider] || await providerStatus(activeProfile);
     sendJson(response, 200, {
       activeProfileId: activeProfile.id,
       profiles,
@@ -3976,31 +4246,49 @@ async function route(request, response) {
       const next = sanitizedJobWatchSettings(body, profile, current);
       next.lastScanAt = "";
       next.lastError = "";
-      jobWatchStore.profiles[profile.id] = next;
+      const franceTravailClientId = validatedStoredSecret(
+        body.franceTravailClientId,
+        "L’identifiant France Travail",
+        1_024
+      );
+      const franceTravailClientSecret = validatedStoredSecret(
+        body.franceTravailClientSecret,
+        "Le secret France Travail"
+      );
+      const laBonneAlternanceToken = validatedStoredSecret(
+        body.laBonneAlternanceToken,
+        "Le jeton La Bonne Alternance"
+      );
       const secretWrites = [];
-      if (typeof body.franceTravailClientId === "string" && body.franceTravailClientId.trim()) {
+      if (franceTravailClientId) {
         secretWrites.push(storeProviderSecret(
           profile.id,
           "france-travail-client-id",
-          body.franceTravailClientId.trim()
+          franceTravailClientId
         ));
       }
-      if (typeof body.franceTravailClientSecret === "string" && body.franceTravailClientSecret.trim()) {
+      if (franceTravailClientSecret) {
         secretWrites.push(storeProviderSecret(
           profile.id,
           "france-travail-client-secret",
-          body.franceTravailClientSecret.trim()
+          franceTravailClientSecret
         ));
       }
-      if (typeof body.laBonneAlternanceToken === "string" && body.laBonneAlternanceToken.trim()) {
+      if (laBonneAlternanceToken) {
         secretWrites.push(storeProviderSecret(
           profile.id,
           "la-bonne-alternance-token",
-          body.laBonneAlternanceToken.trim()
+          laBonneAlternanceToken
         ));
       }
       await Promise.all(secretWrites);
-      await saveJobWatchStore();
+      jobWatchStore.profiles[profile.id] = next;
+      try {
+        await saveJobWatchStore();
+      } catch (error) {
+        jobWatchStore.profiles[profile.id] = current;
+        throw error;
+      }
       const payload = body.scanNow === false
         ? await publicJobWatch(profile)
         : await scanJobWatch(profile, { force: true });
@@ -4066,13 +4354,15 @@ async function route(request, response) {
       sendJson(response, 403, { error: "Origine non autorisée." });
       return;
     }
-    if (activeJobId || activeBundleId) {
+    if (hasActiveProcessing()) {
       sendJson(response, 409, { error: "Termine le traitement en cours avant de créer un profil." });
       return;
     }
+    const reservation = reserveProcessing("profile-create");
     try {
       const body = await readJsonBody(request, MAX_PROFILE_BODY_BYTES);
       const fields = validatedProfileFields(body);
+      const apiKey = validatedApiKey(body.apiKey);
       const now = new Date().toISOString();
       const profile = {
         id: uniqueProfileId(fields.name),
@@ -4087,18 +4377,27 @@ async function route(request, response) {
       if (!state.cvFr || !state.coverLetter) {
         throw new Error("Ajoute au minimum un CV français et un modèle de lettre DOCX.");
       }
+      if (apiKey) {
+        await storeProviderSecret(profile.id, profile.provider, apiKey);
+      }
+      const previousActiveProfileId = profileStore.activeProfileId;
       profileStore.profiles.push(profile);
       profileStore.activeProfileId = profile.id;
-      if (typeof body.apiKey === "string" && body.apiKey.trim()) {
-        await storeProviderSecret(profile.id, profile.provider, body.apiKey.trim());
+      try {
+        await saveProfiles();
+      } catch (error) {
+        profileStore.profiles = profileStore.profiles.filter((candidate) => candidate !== profile);
+        profileStore.activeProfileId = previousActiveProfileId;
+        throw error;
       }
-      await saveProfiles();
+      releaseProcessingReservation(reservation);
       sendJson(response, 201, {
         profile: await publicProfile(profile, { includeFacts: true }),
         activeProfileId: profile.id,
         providerStatus: await providerStatus(profile),
       });
     } catch (error) {
+      releaseProcessingReservation(reservation);
       sendJson(response, 400, { error: error instanceof Error ? error.message : "Profil invalide." });
     }
     return;
@@ -4110,40 +4409,54 @@ async function route(request, response) {
       sendJson(response, 403, { error: "Origine non autorisée." });
       return;
     }
-    if (activeJobId || activeBundleId) {
+    if (hasActiveProcessing()) {
       sendJson(response, 409, { error: "Termine le traitement en cours avant de modifier ce profil." });
       return;
     }
+    const reservation = reserveProcessing("profile-update");
     const profile = profileById(profileMatch[1]);
     if (!profile) {
+      releaseProcessingReservation(reservation);
       sendJson(response, 404, { error: "Profil introuvable." });
       return;
     }
     try {
       const body = await readJsonBody(request, MAX_PROFILE_BODY_BYTES);
       const fields = validatedProfileFields(body, profile);
-      Object.assign(profile, fields, {
+      const apiKey = validatedApiKey(body.apiKey);
+      const nextProfile = {
+        ...profile,
+        ...fields,
         initials: initialsFor(fields.name),
         updatedAt: new Date().toISOString(),
-      });
-      await saveProfileTemplates(profile, body.templates);
-      if (typeof body.apiKey === "string" && body.apiKey.trim()) {
-        await storeProviderSecret(profile.id, profile.provider, body.apiKey.trim());
+      };
+      await saveProfileTemplates(nextProfile, body.templates);
+      if (apiKey) {
+        await storeProviderSecret(profile.id, nextProfile.provider, apiKey);
       }
+      const previousProfile = { ...profile };
+      Object.assign(profile, nextProfile);
       for (const job of jobs.values()) {
         if (job.profileId !== profile.id || normalizeApplicationCategory(job.category, profile) !== "auto") continue;
         job.category = profile.domains[0].id;
         applicationCategories.set(job.id, job.category);
         applicationProfiles.set(job.id, profile.id);
       }
-      await saveProfiles();
-      await saveApplicationCategories();
+      try {
+        await saveProfiles();
+        await saveApplicationCategories();
+      } catch (error) {
+        Object.assign(profile, previousProfile);
+        throw error;
+      }
+      releaseProcessingReservation(reservation);
       sendJson(response, 200, {
         profile: await publicProfile(profile, { includeFacts: true }),
         activeProfileId: profileStore.activeProfileId,
         providerStatus: await providerStatus(profile),
       });
     } catch (error) {
+      releaseProcessingReservation(reservation);
       sendJson(response, 400, { error: error instanceof Error ? error.message : "Profil invalide." });
     }
     return;
@@ -4155,7 +4468,7 @@ async function route(request, response) {
       sendJson(response, 403, { error: "Origine non autorisée." });
       return;
     }
-    if (activeJobId || activeBundleId) {
+    if (hasActiveProcessing()) {
       sendJson(response, 409, { error: "Termine ou annule le traitement avant de changer de profil." });
       return;
     }
@@ -4164,13 +4477,22 @@ async function route(request, response) {
       sendJson(response, 404, { error: "Profil introuvable." });
       return;
     }
-    profileStore.activeProfileId = profile.id;
-    await saveProfiles();
-    sendJson(response, 200, {
-      profile: await publicProfile(profile, { includeFacts: true }),
-      activeProfileId: profile.id,
-      providerStatus: await providerStatus(profile),
-    });
+    const reservation = reserveProcessing("profile-activate");
+    const previousActiveProfileId = profileStore.activeProfileId;
+    try {
+      profileStore.activeProfileId = profile.id;
+      await saveProfiles();
+      releaseProcessingReservation(reservation);
+      sendJson(response, 200, {
+        profile: await publicProfile(profile, { includeFacts: true }),
+        activeProfileId: profile.id,
+        providerStatus: await providerStatus(profile),
+      });
+    } catch (error) {
+      profileStore.activeProfileId = previousActiveProfileId;
+      releaseProcessingReservation(reservation);
+      sendJson(response, 500, { error: "Le profil actif n’a pas pu être enregistré." });
+    }
     return;
   }
 
@@ -4252,10 +4574,11 @@ async function route(request, response) {
       sendJson(response, 403, { error: "Origine non autorisée." });
       return;
     }
-    if (activeJobId || activeBundleId) {
+    if (hasActiveProcessing()) {
       sendJson(response, 409, { error: "Une analyse ou une candidature est déjà en cours. Attends la fin ou annule-la." });
       return;
     }
+    const reservation = reserveProcessing("bundle");
     try {
       const profile = getActiveProfile();
       const engine = await providerStatus(profile);
@@ -4308,14 +4631,11 @@ async function route(request, response) {
         const rawOffers = body.offers.map((offer) => typeof offer === "string" ? offer.trim() : "").filter(Boolean);
         const offers = [];
         const seenCanonical = new Map();
-        for (const offer of rawOffers) {
-          let parsed;
-          try {
-            parsed = new URL(offer);
-          } catch {
-            throw new Error(`Lien invalide : ${offer.slice(0, 100)}`);
-          }
-          if (!["http:", "https:"].includes(parsed.protocol)) throw new Error("Les bundles acceptent uniquement des liens http ou https.");
+        for (const rawOffer of rawOffers) {
+          const offer = validatePublicHttpUrl(rawOffer, {
+            label: `Le lien « ${rawOffer.slice(0, 80)} »`,
+            maxLength: 2_000,
+          });
           const canonical = canonicalUrl(offer) || offer;
           if (seenCanonical.has(canonical)) {
             throw new Error(`Le lien "${offer.slice(0, 80)}" est un doublon du poste ${seenCanonical.get(canonical) + 1} (URL identique ou paramètres de tracking différents).`);
@@ -4372,9 +4692,11 @@ async function route(request, response) {
       };
       bundles.set(id, bundle);
       activeBundleId = id;
+      releaseProcessingReservation(reservation);
       runBundleAnalysisQueue(bundle);
       sendJson(response, 202, publicBundle(bundle));
     } catch (error) {
+      releaseProcessingReservation(reservation);
       sendJson(response, 400, { error: error instanceof Error ? error.message : "Requête invalide." });
     }
     return;
@@ -4407,9 +4729,17 @@ async function route(request, response) {
       sendJson(response, 404, { error: "Bundle introuvable." });
       return;
     }
+    if (bundle.transitioning) {
+      sendJson(response, 409, { error: "La validation de ce bundle est déjà en cours." });
+      return;
+    }
+    bundle.transitioning = true;
     try {
       if (bundle.state !== "needs_input") throw new Error("Ce bundle n’attend pas de validation.");
       const body = await readJsonBody(request);
+      if (bundle.canceled || bundle.state !== "needs_input") {
+        throw new Error("Ce bundle a changé d’état pendant la validation.");
+      }
       if (!Array.isArray(body.items)) throw new Error("Les réponses du bundle sont incomplètes.");
       const responseByItem = new Map(body.items.map((entry) => [entry?.itemId, entry?.answers]));
       const readyItems = bundle.items.filter((item) => item.state === "needs_input");
@@ -4426,8 +4756,10 @@ async function route(request, response) {
       bundle.stage = "drafting";
       bundle.message = `Génération de ${readyItems.length} candidatures, ${bundle.generationConcurrency} en parallèle`;
       runBundleGenerationQueue(bundle);
+      bundle.transitioning = false;
       sendJson(response, 202, publicBundle(bundle));
     } catch (error) {
+      bundle.transitioning = false;
       sendJson(response, 400, { error: error instanceof Error ? error.message : "Réponses invalides." });
     }
     return;
@@ -4439,52 +4771,49 @@ async function route(request, response) {
       sendJson(response, 403, { error: "Origine non autorisée." });
       return;
     }
-    if (activeJobId || activeBundleId) {
+    if (hasActiveProcessing()) {
       sendJson(response, 409, { error: "Un traitement est déjà en cours." });
       return;
     }
+    const reservation = reserveProcessing("bundle-retry");
     const bundle = bundles.get(bundleRetryMatch[1]);
     if (!bundle || bundle.profileId !== getActiveProfile().id) {
+      releaseProcessingReservation(reservation);
       sendJson(response, 404, { error: "Lot introuvable." });
       return;
     }
     const failedItems = bundle.items.filter((item) => item.state === "failed");
     if (!failedItems.length) {
+      releaseProcessingReservation(reservation);
       sendJson(response, 400, { error: "Aucun poste en échec à relancer." });
       return;
     }
-    let body = {};
     try {
-      body = await readJsonBody(request);
-    } catch (error) {
-      if (Number(request.headers["content-length"] || 0) > 0) {
-        sendJson(response, 400, { error: error instanceof Error ? error.message : "Requête invalide." });
-        return;
+      const body = await readOptionalJsonBody(request);
+      const profile = profileById(bundle.profileId) || getActiveProfile();
+      const requestedProvider = typeof body.provider === "string" && PROVIDERS[body.provider]
+        ? body.provider
+        : bundle.provider;
+      const requestedModel = validatedProviderModel(body.model);
+      const scopedProfile = {
+        ...profile,
+        provider: requestedProvider,
+        providerModel: requestedModel,
+      };
+      const engine = await providerStatus(scopedProfile);
+      if (!engine.ready) throw new Error(engine.message);
+      if (requestedModel && engine.models.length && !engine.models.includes(requestedModel)) {
+        throw new Error("Le modèle choisi n’est plus disponible sur ce moteur.");
       }
-    }
-    const profile = profileById(bundle.profileId) || getActiveProfile();
-    const requestedProvider = typeof body.provider === "string" && PROVIDERS[body.provider]
-      ? body.provider
-      : bundle.provider;
-    const requestedModel = validatedProviderModel(body.model);
-    const scopedProfile = {
-      ...profile,
-      provider: requestedProvider,
-      providerModel: requestedModel,
-    };
-    const engine = await providerStatus(scopedProfile);
-    if (!engine.ready) {
-      sendJson(response, 400, { error: engine.message });
+      bundle.provider = requestedProvider;
+      bundle.providerModel = requestedModel || engine.selectedModel || "";
+      bundle.analysisConcurrency = analysisConcurrencyForProvider(requestedProvider);
+      bundle.generationConcurrency = generationConcurrencyForProvider(requestedProvider);
+    } catch (error) {
+      releaseProcessingReservation(reservation);
+      sendJson(response, 400, { error: error instanceof Error ? error.message : "Requête invalide." });
       return;
     }
-    if (requestedModel && engine.models.length && !engine.models.includes(requestedModel)) {
-      sendJson(response, 400, { error: "Le modèle choisi n’est plus disponible sur ce moteur." });
-      return;
-    }
-    bundle.provider = requestedProvider;
-    bundle.providerModel = requestedModel || engine.selectedModel || "";
-    bundle.analysisConcurrency = analysisConcurrencyForProvider(requestedProvider);
-    bundle.generationConcurrency = generationConcurrencyForProvider(requestedProvider);
     const analysisQueue = [];
     const generationQueue = [];
     for (const item of failedItems) {
@@ -4524,6 +4853,7 @@ async function route(request, response) {
     bundle.canceled = false;
     bundle.finalizing = false;
     activeBundleId = bundle.state === "running" ? bundle.id : null;
+    releaseProcessingReservation(reservation);
     runBundleAnalysisQueue(bundle);
     runBundleGenerationQueue(bundle);
     sendJson(response, 202, publicBundle(bundle));
@@ -4546,6 +4876,7 @@ async function route(request, response) {
       bundle.state = "canceled";
       bundle.stage = "canceled";
       bundle.message = "Bundle annulé";
+      const canceledJobs = [];
       for (const item of bundle.items) {
         if (!["completed", "failed"].includes(item.state)) item.state = "canceled";
       }
@@ -4553,10 +4884,12 @@ async function route(request, response) {
         if (job.bundleId !== bundle.id || !["queued", "running"].includes(job.state)) continue;
         job.state = "canceled";
         updateStage(job, "canceled", "Traitement annulé");
-        if (job.timeout) clearTimeout(job.timeout);
+        clearJobTimers(job);
         terminatePortableProcess(job.child);
+        canceledJobs.push(persistJobCheckpoint(job));
       }
       if (activeBundleId === bundle.id) activeBundleId = null;
+      await Promise.all(canceledJobs);
     }
     sendJson(response, 200, publicBundle(bundle));
     return;
@@ -4571,23 +4904,23 @@ async function route(request, response) {
       sendJson(response, 404, { error: "Fichier indisponible." });
       return;
     }
-    const filePath = {
+    const candidatePath = {
       docx: item.result.docxPath,
       pdf: item.result.pdfPath,
       "letter-docx": item.result.coverLetterDocxPath,
       "letter-pdf": item.result.coverLetterPdfPath,
     }[kind];
-    const info = await stat(filePath);
     const extension = kind.endsWith("docx") ? ".docx" : ".pdf";
     const disposition = kind.endsWith("pdf") && url.searchParams.get("preview") === "1" ? "inline" : "attachment";
-    response.writeHead(200, {
-      "Content-Type": MIME_TYPES.get(extension),
-      "Content-Length": info.size,
-      "Content-Disposition": `${disposition}; filename="${path.basename(filePath).replaceAll('"', "")}"`,
-      "Cache-Control": "private, no-store",
-      "X-Content-Type-Options": "nosniff",
-    });
-    createReadStream(filePath).pipe(response);
+    try {
+      const filePath = await validatedOutputPath(candidatePath, extension, bundle.profileId);
+      await serveFile(request, response, filePath, {
+        contentType: MIME_TYPES.get(extension),
+        disposition,
+      });
+    } catch {
+      sendJson(response, 404, { error: "Fichier indisponible." });
+    }
     return;
   }
 
@@ -4613,15 +4946,12 @@ async function route(request, response) {
       sendJson(response, 404, { error: "Archive indisponible." });
       return;
     }
-    const info = await stat(archivePath);
-    response.writeHead(200, {
-      "Content-Type": MIME_TYPES.get(".zip"),
-      "Content-Length": info.size,
-      "Content-Disposition": `attachment; filename="${path.basename(archivePath).replaceAll('"', "")}"`,
-      "Cache-Control": "private, no-store",
-      "X-Content-Type-Options": "nosniff",
-    });
-    createReadStream(archivePath).pipe(response);
+    try {
+      const validated = await validatedFileWithin(archivePath, BUNDLE_DIR, ".zip");
+      await serveFile(request, response, validated.path, { contentType: MIME_TYPES.get(".zip") });
+    } catch {
+      sendJson(response, 404, { error: "Archive indisponible." });
+    }
     return;
   }
 
@@ -4634,15 +4964,12 @@ async function route(request, response) {
       sendJson(response, 404, { error: "Archive indisponible." });
       return;
     }
-    const info = await stat(archivePath);
-    response.writeHead(200, {
-      "Content-Type": MIME_TYPES.get(".zip"),
-      "Content-Length": info.size,
-      "Content-Disposition": `attachment; filename="${path.basename(archivePath).replaceAll('"', "")}"`,
-      "Cache-Control": "private, no-store",
-      "X-Content-Type-Options": "nosniff",
-    });
-    createReadStream(archivePath).pipe(response);
+    try {
+      const validated = await validatedFileWithin(archivePath, BUNDLE_DIR, ".zip");
+      await serveFile(request, response, validated.path, { contentType: MIME_TYPES.get(".zip") });
+    } catch {
+      sendJson(response, 404, { error: "Archive indisponible." });
+    }
     return;
   }
 
@@ -4651,10 +4978,11 @@ async function route(request, response) {
       sendJson(response, 403, { error: "Origine non autorisée." });
       return;
     }
-    if (activeJobId || activeBundleId) {
+    if (hasActiveProcessing()) {
       sendJson(response, 409, { error: "Une analyse ou une candidature est déjà en cours. Attends la fin ou annule-la." });
       return;
     }
+    const reservation = reserveProcessing("analysis");
     try {
       const profile = getActiveProfile();
       const engine = await providerStatus(profile);
@@ -4671,7 +4999,7 @@ async function route(request, response) {
       const offer = spontaneousTarget
         ? spontaneousTargetAsSource(spontaneousTarget)
         : typeof body.offer === "string"
-          ? compactOfferText(body.offer)
+          ? validatedOfferText(body.offer)
           : "";
       if (!["auto", "cdi", "alternance"].includes(mode)) throw new Error("Choisis Auto, CDI ou Alternance.");
       if (!["auto", "fr", "en"].includes(language)) throw new Error("Choisis Auto, Français ou English.");
@@ -4712,6 +5040,7 @@ async function route(request, response) {
       };
       jobs.set(id, job);
       activeJobId = id;
+      releaseProcessingReservation(reservation);
       void startAnalysis(job).catch(async (error) => {
         activeJobId = null;
         job.state = "failed";
@@ -4723,6 +5052,7 @@ async function route(request, response) {
       });
       sendJson(response, 202, publicJob(job));
     } catch (error) {
+      releaseProcessingReservation(reservation);
       sendJson(response, 400, { error: error instanceof Error ? error.message : "Requête invalide." });
     }
     return;
@@ -4733,10 +5063,11 @@ async function route(request, response) {
       sendJson(response, 403, { error: "Origine non autorisée." });
       return;
     }
-    if (activeJobId || activeBundleId) {
+    if (hasActiveProcessing()) {
       sendJson(response, 409, { error: "Une candidature est déjà en cours. Attends la fin ou annule-la." });
       return;
     }
+    const reservation = reserveProcessing("generation");
     try {
       const body = await readJsonBody(request);
       const analysisId = typeof body.analysisId === "string" ? body.analysisId : "";
@@ -4774,7 +5105,7 @@ async function route(request, response) {
         offer = spontaneousTarget
           ? spontaneousTargetAsSource(spontaneousTarget)
           : typeof body.offer === "string"
-            ? compactOfferText(body.offer)
+            ? validatedOfferText(body.offer)
             : "";
       }
       if (!["auto", "cdi", "alternance"].includes(mode)) throw new Error("Choisis Auto, CDI ou Alternance.");
@@ -4817,6 +5148,7 @@ async function route(request, response) {
       };
       jobs.set(id, job);
       activeJobId = id;
+      releaseProcessingReservation(reservation);
       void startJob(job, offer, analysis, answers).catch(async (error) => {
         activeJobId = null;
         job.state = "failed";
@@ -4828,6 +5160,7 @@ async function route(request, response) {
       });
       sendJson(response, 202, publicJob(job));
     } catch (error) {
+      releaseProcessingReservation(reservation);
       sendJson(response, 400, { error: error instanceof Error ? error.message : "Requête invalide." });
     }
     return;
@@ -4969,7 +5302,7 @@ async function route(request, response) {
       sendJson(response, 403, { error: "Origine non autorisée." });
       return;
     }
-    if (activeJobId || activeBundleId) {
+    if (hasActiveProcessing()) {
       sendJson(response, 409, { error: "Un traitement est déjà en cours." });
       return;
     }
@@ -4983,8 +5316,9 @@ async function route(request, response) {
       sendJson(response, 400, { error: "Ce traitement ne peut pas être repris." });
       return;
     }
+    const reservation = reserveProcessing("job-resume");
     try {
-      const body = await readJsonBody(request);
+      const body = await readOptionalJsonBody(request);
       const profile = profileById(job.profileId) || getActiveProfile();
       const requestedProvider = typeof body.provider === "string" && PROVIDERS[body.provider]
         ? body.provider
@@ -5019,6 +5353,7 @@ async function route(request, response) {
       job.recoveryRequested = resumeFrom === "generation";
       clearJobTimers(job);
       activeJobId = job.id;
+      releaseProcessingReservation(reservation);
       await persistJobCheckpoint(job);
       if (resumeFrom === "analysis") {
         job.result = null;
@@ -5045,6 +5380,7 @@ async function route(request, response) {
       sendJson(response, 202, publicJob(job));
     } catch (error) {
       activeJobId = null;
+      releaseProcessingReservation(reservation);
       sendJson(response, 400, { error: error instanceof Error ? error.message : "Reprise impossible." });
     }
     return;
@@ -5064,9 +5400,10 @@ async function route(request, response) {
     if (["queued", "running"].includes(job.state)) {
       job.state = "canceled";
       updateStage(job, "canceled", "Traitement annulé");
-      if (job.timeout) clearTimeout(job.timeout);
+      clearJobTimers(job);
       terminatePortableProcess(job.child);
       if (activeJobId === job.id) activeJobId = null;
+      await persistJobCheckpoint(job);
     }
     sendJson(response, 200, publicJob(job));
     return;
@@ -5086,18 +5423,17 @@ async function route(request, response) {
       "letter-docx": job.result.coverLetterDocxPath,
       "letter-pdf": job.result.coverLetterPdfPath,
     };
-    const filePath = filePaths[kind];
-    const info = await stat(filePath);
     const extension = kind.endsWith("docx") ? ".docx" : ".pdf";
     const disposition = kind.endsWith("pdf") && url.searchParams.get("preview") === "1" ? "inline" : "attachment";
-    response.writeHead(200, {
-      "Content-Type": MIME_TYPES.get(extension),
-      "Content-Length": info.size,
-      "Content-Disposition": `${disposition}; filename="${path.basename(filePath).replaceAll('"', "")}"`,
-      "Cache-Control": "private, no-store",
-      "X-Content-Type-Options": "nosniff",
-    });
-    createReadStream(filePath).pipe(response);
+    try {
+      const filePath = await validatedOutputPath(filePaths[kind], extension, job.profileId);
+      await serveFile(request, response, filePath, {
+        contentType: MIME_TYPES.get(extension),
+        disposition,
+      });
+    } catch {
+      sendJson(response, 404, { error: "Fichier indisponible." });
+    }
     return;
   }
 
@@ -5121,15 +5457,12 @@ async function route(request, response) {
       sendJson(response, 404, { error: "Archive indisponible." });
       return;
     }
-    const info = await stat(archivePath);
-    response.writeHead(200, {
-      "Content-Type": MIME_TYPES.get(".zip"),
-      "Content-Length": info.size,
-      "Content-Disposition": `attachment; filename="${path.basename(archivePath).replaceAll('"', "")}"`,
-      "Cache-Control": "private, no-store",
-      "X-Content-Type-Options": "nosniff",
-    });
-    createReadStream(archivePath).pipe(response);
+    try {
+      const validated = await validatedFileWithin(archivePath, BUNDLE_DIR, ".zip");
+      await serveFile(request, response, validated.path, { contentType: MIME_TYPES.get(".zip") });
+    } catch {
+      sendJson(response, 404, { error: "Archive indisponible." });
+    }
     return;
   }
 

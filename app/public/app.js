@@ -4,12 +4,13 @@ import {
   mergePastedOfferLinks,
 } from "./link-import.js";
 
+const appBoot = document.querySelector("#appBoot");
 const form = document.querySelector("#jobForm");
 const topNewApplicationButton = document.querySelector("#topNewApplicationButton");
-const libraryNewApplicationButton = document.querySelector("#libraryNewApplicationButton");
 const librarySearchField = document.querySelector("#librarySearchField");
 const applicationsTotal = document.querySelector("#applicationsTotal");
 const applicationsSummary = document.querySelector("#applicationsSummary");
+const applicationsMobileToggle = document.querySelector("#applicationsMobileToggle");
 const libraryStatusFilters = document.querySelector("#libraryStatusFilters");
 const filterAllCount = document.querySelector("#filterAllCount");
 const filterActiveCount = document.querySelector("#filterActiveCount");
@@ -29,6 +30,8 @@ const libraryBulkMessage = document.querySelector("#libraryBulkMessage");
 const applicationGroups = document.querySelector("#applicationGroups");
 const workspace = document.querySelector(".workspace");
 const profileSettings = document.querySelector("#profileSettings");
+const setupGuideSummary = document.querySelector("#setupGuideSummary");
+const setupGuideSteps = [...document.querySelectorAll("[data-setup-step]")];
 const previewPane = document.querySelector(".preview-pane");
 const previewStage = document.querySelector("#previewStage");
 const sourceComposer = document.querySelector("#sourceComposer");
@@ -71,6 +74,7 @@ const progressRegion = document.querySelector("#progressRegion");
 const progressTitle = document.querySelector("#progressTitle");
 const progressMessage = document.querySelector("#progressMessage");
 const progressPercent = document.querySelector("#progressPercent");
+const progressTrack = document.querySelector("#progressTrack");
 const progressBar = document.querySelector("#progressBar");
 const automationToggleButton = document.querySelector("#automationToggleButton");
 const soundToggleButton = document.querySelector("#soundToggleButton");
@@ -174,6 +178,7 @@ const resultCategoryBadge = document.querySelector("#resultCategoryBadge");
 const docxPackDownload = document.querySelector("#docxPackDownload");
 const pdfPackDownload = document.querySelector("#pdfPackDownload");
 const bundleResults = document.querySelector("#bundleResults");
+const bundleResultsTitle = document.querySelector("#bundleResultsTitle");
 const bundleResultsStatus = document.querySelector("#bundleResultsStatus");
 const bundleResultList = document.querySelector("#bundleResultList");
 const bundleRetryFailuresButton = document.querySelector("#bundleRetryFailuresButton");
@@ -572,6 +577,19 @@ function setSystemState(kind, text) {
   systemState.classList.remove("ready", "error");
   if (kind) systemState.classList.add(kind);
   systemStateText.textContent = text;
+  systemState.title = text;
+}
+
+function updateProgressValue(value) {
+  const normalized = Math.max(0, Math.min(100, Number(value) || 0));
+  progressPercent.textContent = `${normalized} %`;
+  progressBar.style.transform = `scaleX(${normalized / 100})`;
+  progressTrack.setAttribute("aria-valuenow", String(normalized));
+}
+
+function revealApplication() {
+  document.body.classList.remove("is-booting");
+  appBoot.hidden = true;
 }
 
 function providerForConnection(providerId = connectionProviderId) {
@@ -828,7 +846,7 @@ async function checkHealth({ autoPrompt = false } = {}) {
           : "Complète le profil candidat avant de lancer une candidature.";
         if (autoPrompt && !hasAutoOpenedProfileSetup) {
           hasAutoOpenedProfileSetup = true;
-          window.setTimeout(showProfileSettings, 180);
+          showProfileSettings();
         }
       } else {
         promptTitle.textContent = "Le moteur IA attend ta connexion";
@@ -837,7 +855,7 @@ async function checkHealth({ autoPrompt = false } = {}) {
         formError.textContent = `${health.engine?.label || "Le moteur IA"} n’est pas encore connecté. Utilise le bouton ci-dessous pour terminer la configuration.`;
         if (autoPrompt && !hasAutoOpenedConnection) {
           hasAutoOpenedConnection = true;
-          window.setTimeout(() => openProviderConnectionDialog(health.engine?.id || activeProfile?.provider, { automatic: true }), 150);
+          openProviderConnectionDialog(health.engine?.id || activeProfile?.provider, { automatic: true });
         }
       }
       submitButton.disabled = true;
@@ -981,10 +999,11 @@ async function loadProviderUsage({ force = false } = {}) {
     quotaSummaryValue.textContent = "Lecture indisponible";
   } finally {
     refreshUsageButton.disabled = false;
+    const usageDelay = busyPhase || modelUsagePanel.matches(":popover-open") ? 30_000 : 120_000;
     usagePollTimer = window.setTimeout(() => {
       usagePollTimer = null;
       if (document.visibilityState === "visible") void loadProviderUsage();
-    }, 30_000);
+    }, usageDelay);
   }
 }
 
@@ -1730,8 +1749,23 @@ function updateProfilePreview() {
   const letterReady = uploadedOrSaved(profileCoverLetterField, "coverLetter");
   const requiredDocuments = Number(cvReady) + Number(letterReady);
   const providerReady = providerStatuses[provider?.id]?.ready || (profile?.provider === provider?.id && activeProviderStatus?.ready);
-  const checks = [name.length >= 2, headline.length >= 3, domains.length > 0, factsReady, cvReady, letterReady, Boolean(providerReady)];
-  const readiness = Math.round((checks.filter(Boolean).length / checks.length) * 100);
+  const setupState = {
+    profile: name.length >= 2 && headline.length >= 3 && domains.length > 0 && factsReady,
+    documents: cvReady && letterReady,
+    provider: Boolean(providerReady),
+  };
+  const completedSteps = Object.values(setupState).filter(Boolean).length;
+
+  setupGuideSteps.forEach((step) => {
+    const complete = Boolean(setupState[step.dataset.setupStep]);
+    step.dataset.state = complete ? "complete" : "pending";
+    step.querySelector("a")?.setAttribute("aria-label", `${step.querySelector("strong")?.textContent || "Étape"} : ${complete ? "prête" : "à compléter"}`);
+  });
+  const setupSummary = completedSteps === 3
+    ? "Ton espace est prêt. Tu peux enregistrer puis lancer une candidature."
+    : `${completedSteps} étape${completedSteps > 1 ? "s" : ""} sur 3 prête${completedSteps > 1 ? "s" : ""}. Complète uniquement les éléments marqués à faire.`;
+  if (setupGuideSummary.textContent !== setupSummary) setupGuideSummary.textContent = setupSummary;
+  setupGuideSummary.parentElement.parentElement.style.setProperty("--setup-progress", `${completedSteps / 3}`);
 
   previewDraftLabel.textContent = isNew ? "Nouveau profil" : profile.id === activeProfile?.id ? "Profil actif en modification" : "Profil enregistré";
   previewDraftName.textContent = name || "Nom du candidat";
@@ -1740,10 +1774,11 @@ function updateProfilePreview() {
   previewProvider.textContent = provider?.label || "À choisir";
   previewDocuments.textContent = `${requiredDocuments} sur 2 requis`;
   previewFacts.textContent = factsReady ? "Base prête" : "À renseigner";
-  previewReadiness.textContent = readiness === 100 ? "Prêt" : `${readiness} %`;
-  previewReadiness.classList.toggle("is-ready", readiness === 100);
-  previewProgressBar.style.transform = `scaleX(${readiness / 100})`;
-  previewDraftProfile.classList.toggle("is-ready", readiness === 100);
+  const profileReady = completedSteps === 3;
+  previewReadiness.textContent = profileReady ? "Prêt" : "À compléter";
+  previewReadiness.classList.toggle("is-ready", profileReady);
+  previewProgressBar.style.transform = `scaleX(${completedSteps / 3})`;
+  previewDraftProfile.classList.toggle("is-ready", profileReady);
   previewDomains.replaceChildren(...(domains.length ? domains : ["Domaine"]).map((domain) => createTextElement("span", "preview-domain", domain)));
   profilePreviewNote.textContent = isNew
     ? "À l’enregistrement, ce profil apparaîtra sous le profil actif et gardera ses candidatures séparées."
@@ -1919,11 +1954,16 @@ async function filePayload(input) {
 async function initialize() {
   await loadProfiles();
   restoreIntakeDraft();
-  await checkHealth({ autoPrompt: true });
-  await loadApplicationLibrary();
-  await restoreLatestJob();
-  await loadProviderUsage();
-  await loadJobWatch({ hydrateSettings: true });
+  await Promise.all([
+    checkHealth({ autoPrompt: true }),
+    loadApplicationLibrary(),
+    restoreLatestJob(),
+  ]);
+  revealApplication();
+  await Promise.allSettled([
+    loadProviderUsage(),
+    loadJobWatch({ hydrateSettings: true }),
+  ]);
 }
 
 function updateSubmitLabel() {
@@ -2222,7 +2262,7 @@ function syncControlState() {
   document.querySelectorAll('input[name="category"], input[name="mode"], input[name="language"]').forEach((input) => {
     input.disabled = busy || intakeLocked;
   });
-  document.querySelectorAll(".application-item-button, #topNewApplicationButton, #libraryNewApplicationButton, #profileMenuButton").forEach((control) => {
+  document.querySelectorAll(".application-item-button, #topNewApplicationButton, #profileMenuButton").forEach((control) => {
     control.disabled = busy;
   });
   document.querySelectorAll(".move-application-select, .application-status-select").forEach((control) => {
@@ -2241,7 +2281,7 @@ function syncControlState() {
 
 function updateReviewActionLabel() {
   if (busyPhase === "generation") {
-    generateButton.textContent = busyScope === "bundle" ? "Génération du bundle…" : "Génération en cours…";
+    generateButton.textContent = busyScope === "bundle" ? "Génération du lot…" : "Génération en cours…";
     return;
   }
   if (currentBundle && bundleReviewItems.length) {
@@ -2364,8 +2404,7 @@ function setProgress(job, options = {}) {
     job.tokenUsage?.totalTokens ? `${formatTokenCount(job.tokenUsage.totalTokens)} tokens` : "",
   ].filter(Boolean);
   processMetadata.textContent = metadata.join(" · ");
-  progressPercent.textContent = `${job.progress} %`;
-  progressBar.style.transform = `scaleX(${job.progress / 100})`;
+  updateProgressValue(job.progress);
   notifyProgressMilestones(job.stage, options);
   const order = ["analyzing", "review", "drafting", "verifying", "completed"];
   const visibleStage = job.stage === "packaging" ? "completed" : job.stage;
@@ -2373,6 +2412,8 @@ function setProgress(job, options = {}) {
   steps.forEach((step, index) => {
     step.classList.toggle("done", activeIndex > index || visibleStage === "completed" && job.stage === "completed");
     step.classList.toggle("active", activeIndex === index && job.stage !== "completed");
+    if (activeIndex === index && job.stage !== "completed") step.setAttribute("aria-current", "step");
+    else step.removeAttribute("aria-current");
   });
   if (job.state === "failed") renderRecovery(job);
   else if (job.state !== "canceled") hideRecovery();
@@ -2625,10 +2666,11 @@ async function loadJobWatch({ refresh = false, hydrateSettings = false } = {}) {
     if (refresh) jobWatchSettingsStatus.textContent = message;
   } finally {
     refreshJobWatchButton.disabled = false;
+    const watchDelay = jobWatchPanel.matches(":popover-open") ? 60_000 : 300_000;
     jobWatchPollTimer = window.setTimeout(() => {
       jobWatchPollTimer = null;
       if (document.visibilityState === "visible") void loadJobWatch();
-    }, 60_000);
+    }, watchDelay);
   }
 }
 
@@ -2901,6 +2943,8 @@ function showResult(job, { autoDownload = false } = {}) {
   resetButton.hidden = false;
   renderApplicationLibrary();
   void loadApplicationLibrary();
+  resultBar.focus({ preventScroll: true });
+  resultBar.scrollIntoView({ behavior: "smooth", block: "nearest" });
   if (autoDownload) runCompletionAction(`job:${job.id}`, result);
 }
 
@@ -2921,7 +2965,9 @@ function selectPreview(kind) {
   const languageLabel = currentResult.language === "en" ? "EN" : "FR";
   previewSubtitle.textContent = `${isLetter ? (currentResult.language === "en" ? "Cover letter" : "Lettre de motivation") : "CV"} ${languageLabel} · ${currentResult.contractType.toUpperCase()} · 1 page contrôlée avec LibreOffice`;
   previewTabButtons.forEach((button) => {
-    button.setAttribute("aria-selected", String(button.dataset.document === kind));
+    const selected = button.dataset.document === kind;
+    button.setAttribute("aria-selected", String(selected));
+    button.tabIndex = selected ? 0 : -1;
   });
 }
 
@@ -2956,12 +3002,12 @@ function renderBundleResults(bundle) {
   workspace.classList.add("bundle-result-mode");
   pageBadge.textContent = `${bundle.items.length} × 2 documents`;
   bundleResultsStatus.textContent = bundle.state === "completed"
-    ? "Bundle terminé"
+    ? "Lot terminé"
     : bundle.state === "canceled"
-      ? "Bundle annulé"
+      ? "Lot annulé"
       : bundle.state === "failed"
-        ? "Bundle interrompu"
-        : "Bundle en cours";
+        ? "Lot interrompu"
+        : "Lot en cours";
   const packsReady = Boolean(bundle.docxPackUrl && bundle.pdfPackUrl);
   const extensionReady = Boolean(bundle.extensionPackUrl);
   bundleRetryFailuresButton.hidden = !bundle.retryableFailures || !["completed", "failed"].includes(bundle.state);
@@ -3069,6 +3115,10 @@ function showBundleComplete(bundle, { autoDownload = false } = {}) {
   resetButton.hidden = false;
   renderBundleResults(bundle);
   void loadApplicationLibrary();
+  if (bundle.state === "completed") {
+    bundleResultsTitle.focus({ preventScroll: true });
+    bundleResultsTitle.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  }
   if (autoDownload) runCompletionAction(`bundle:${bundle.id}`, bundle);
 }
 
@@ -3076,7 +3126,7 @@ function showFailure(message, job = null) {
   formError.textContent = message;
   reviewError.textContent = message;
   previewSubtitle.textContent = job?.canResume || job?.retryableFailures
-    ? "Le traitement est interrompu, mais le dernier checkpoint est prêt à reprendre."
+    ? "Le traitement est interrompu, mais la dernière étape sauvegardée est prête à reprendre."
     : "Le traitement n’a pas abouti. Corrige la saisie puis relance.";
   if (job) renderRecovery(job);
   resetButton.hidden = false;
@@ -3171,7 +3221,7 @@ function resetInterface({ keepOffer = false } = {}) {
   reviewError.textContent = "";
   progressRegion.hidden = true;
   progressTitle.textContent = "Traitement en cours";
-  progressBar.style.transform = "scaleX(0)";
+  updateProgressValue(0);
   processMetadata.textContent = "";
   hideRecovery();
   steps.forEach((step) => step.classList.remove("active", "done"));
@@ -3598,8 +3648,7 @@ form.addEventListener("submit", async (event) => {
     : isBundle
       ? `Préparation de ${uniqueLinks.length} offres`
       : "Lecture des outils et compétences demandés";
-  progressPercent.textContent = "6 %";
-  progressBar.style.transform = "scaleX(0.06)";
+  updateProgressValue(6);
 
   try {
     const requestBody = isBundle
@@ -3649,9 +3698,8 @@ skillsReviewForm.addEventListener("submit", async (event) => {
     form.hidden = false;
     submitButton.hidden = true;
     progressRegion.hidden = false;
-    progressMessage.textContent = "Lancement des candidatures du bundle";
-    progressPercent.textContent = "55 %";
-    progressBar.style.transform = "scaleX(0.55)";
+    progressMessage.textContent = "Lancement des candidatures du lot";
+    updateProgressValue(55);
     renderBundleResults(currentBundle);
     try {
       const response = await fetch(`/api/bundles/${currentBundle.id}/generate`, {
@@ -3664,7 +3712,7 @@ skillsReviewForm.addEventListener("submit", async (event) => {
         }),
       });
       const bundle = await response.json();
-      if (!response.ok) throw new Error(bundle.error || "Impossible de démarrer le bundle.");
+      if (!response.ok) throw new Error(bundle.error || "Impossible de démarrer le lot.");
       currentBundle = bundle;
       activeRequest = { kind: "bundle", id: bundle.id };
       setProgress(bundle);
@@ -3692,8 +3740,7 @@ skillsReviewForm.addEventListener("submit", async (event) => {
   previewTabs.hidden = true;
   progressRegion.hidden = false;
   progressMessage.textContent = "Application de tes réponses au CV et à la lettre";
-  progressPercent.textContent = "35 %";
-  progressBar.style.transform = "scaleX(0.35)";
+    updateProgressValue(35);
 
   try {
     const response = await fetch("/api/jobs", {
@@ -3783,7 +3830,6 @@ async function beginNewApplication() {
 
 resetButton.addEventListener("click", () => void beginNewApplication());
 topNewApplicationButton.addEventListener("click", () => void beginNewApplication());
-libraryNewApplicationButton?.addEventListener("click", () => void beginNewApplication());
 
 document.querySelector(".applications-pane").addEventListener("click", (event) => {
   const filterButton = event.target.closest("[data-library-status-filter]");
@@ -3862,6 +3908,12 @@ libraryBulkApplyButton.addEventListener("click", () => void updateSelectedApplic
 librarySearchField?.addEventListener("input", () => {
   librarySearchQuery = librarySearchField.value;
   renderApplicationLibrary();
+});
+
+applicationsMobileToggle.addEventListener("click", () => {
+  const open = applicationsPane.classList.toggle("is-mobile-open");
+  applicationsMobileToggle.setAttribute("aria-expanded", String(open));
+  applicationsMobileToggle.textContent = open ? "Réduire" : "Voir";
 });
 
 document.querySelector(".applications-pane").addEventListener("change", (event) => {
@@ -4015,8 +4067,20 @@ profileForm.addEventListener("submit", async (event) => {
   }
 });
 
-previewTabButtons.forEach((button) => {
+previewTabButtons.forEach((button, index) => {
   button.addEventListener("click", () => selectPreview(button.dataset.document));
+  button.addEventListener("keydown", (event) => {
+    if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+    event.preventDefault();
+    const nextIndex = event.key === "Home"
+      ? 0
+      : event.key === "End"
+        ? previewTabButtons.length - 1
+        : (index + (event.key === "ArrowRight" ? 1 : -1) + previewTabButtons.length) % previewTabButtons.length;
+    const nextButton = previewTabButtons[nextIndex];
+    nextButton.focus();
+    selectPreview(nextButton.dataset.document);
+  });
 });
 
 soundToggleButton.addEventListener("click", () => {
@@ -4356,6 +4420,7 @@ document.addEventListener("visibilitychange", () => {
 syncUtilityToggles();
 renderOfferLinks();
 void initialize().catch((error) => {
+  revealApplication();
   setSystemState("error", "Initialisation impossible");
   formError.textContent = error instanceof Error ? error.message : "Impossible de charger OpenApply.";
   submitButton.disabled = true;

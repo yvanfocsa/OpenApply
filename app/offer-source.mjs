@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { validatePublicHttpUrl } from "./backend-guards.mjs";
 import { fetchOfferDetails } from "./job-sourcer.mjs";
 
 const DEFAULT_TTL_MS = 12 * 60 * 60 * 1000;
@@ -11,8 +12,7 @@ export function singleHttpUrl(value) {
   const input = String(value || "").trim();
   if (!/^https?:\/\/\S+$/i.test(input)) return "";
   try {
-    const parsed = new URL(input);
-    return ["http:", "https:"].includes(parsed.protocol) ? parsed.toString() : "";
+    return validatePublicHttpUrl(input, { label: "Le lien de l’offre" });
   } catch {
     return "";
   }
