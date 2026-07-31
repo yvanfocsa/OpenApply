@@ -5,10 +5,21 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="description" content="Crée localement des CV et lettres de motivation ciblés, séparés par profil candidat." />
     <title>OpenApply | Candidatures ciblées</title>
-    <link rel="stylesheet" href="/styles.css?v=25" />
-    <script src="/app.js?v=27" type="module"></script>
+    <link rel="stylesheet" href="/styles.css?v=26" />
+    <script src="/app.js?v=28" type="module"></script>
   </head>
-  <body>
+  <body class="is-booting">
+    <div class="app-boot" id="appBoot" role="status" aria-live="polite">
+      <span class="app-boot-mark" aria-hidden="true">OA</span>
+      <div>
+        <strong>Ouverture d’OpenApply</strong>
+        <span>Vérification du profil et des outils locaux</span>
+      </div>
+      <span class="app-boot-progress" aria-hidden="true"></span>
+    </div>
+    <noscript>
+      <p class="noscript-message">JavaScript doit être activé pour utiliser OpenApply.</p>
+    </noscript>
     <a class="skip-link" href="#mainContent">Aller au contenu</a>
     <header class="topbar">
       <a class="brand" href="/" aria-label="OpenApply, accueil">
@@ -155,8 +166,12 @@
             <p class="applications-kicker">Suivi personnel</p>
             <h2 id="applicationsTitle">Mes candidatures</h2>
           </div>
-          <span class="applications-total" id="applicationsTotal" aria-label="0 candidature">0</span>
+          <div class="applications-header-actions">
+            <span class="applications-total" id="applicationsTotal" aria-label="0 candidature">0</span>
+            <button class="applications-mobile-toggle" id="applicationsMobileToggle" type="button" aria-expanded="false" aria-controls="applicationsBody">Voir</button>
+          </div>
         </header>
+        <div class="applications-body" id="applicationsBody">
         <div class="library-summary-row">
           <p class="applications-summary" id="applicationsSummary" aria-live="polite">Aucune candidature à suivre.</p>
           <button
@@ -222,6 +237,7 @@
         <p class="visually-hidden" id="libraryAnnouncement" role="status" aria-live="polite"></p>
 
         <nav class="application-groups" id="applicationGroups" aria-label="Candidatures par domaine"></nav>
+        </div>
       </aside>
 
       <section class="profile-settings" id="profileSettings" aria-labelledby="profileSettingsTitle" hidden>
@@ -235,6 +251,37 @@
           <button class="secondary-button" id="newProfileButton" type="button">+ Nouveau profil</button>
         </header>
 
+        <section class="setup-guide" id="setupGuide" aria-labelledby="setupGuideTitle">
+          <div class="setup-guide-copy">
+            <span>Configuration guidée</span>
+            <h2 id="setupGuideTitle">Trois étapes pour préparer ta première candidature</h2>
+            <p id="setupGuideSummary" aria-live="polite">Vérification de ton espace candidat.</p>
+          </div>
+          <ol class="setup-guide-steps">
+            <li data-setup-step="profile">
+              <a href="#profileIdentitySection">
+                <span aria-hidden="true">1</span>
+                <strong>Profil</strong>
+                <small>Identité et faits vérifiés</small>
+              </a>
+            </li>
+            <li data-setup-step="documents">
+              <a href="#profileTemplatesSection">
+                <span aria-hidden="true">2</span>
+                <strong>Documents</strong>
+                <small>CV et lettre DOCX</small>
+              </a>
+            </li>
+            <li data-setup-step="provider">
+              <a href="#profileProviderSection">
+                <span aria-hidden="true">3</span>
+                <strong>Moteur IA</strong>
+                <small>Connexion vérifiée</small>
+              </a>
+            </li>
+          </ol>
+        </section>
+
         <div class="settings-layout">
           <nav class="settings-profile-list" id="settingsProfileList" aria-label="Profils disponibles"></nav>
 
@@ -247,7 +294,7 @@
               <span class="configuration-status" id="profileConfigurationStatus">Configuré</span>
             </div>
 
-            <div class="settings-section">
+            <div class="settings-section" id="profileIdentitySection">
               <h3>Identité professionnelle</h3>
               <div class="settings-field-grid">
                 <label class="settings-field">
@@ -301,7 +348,7 @@
               </div>
             </div>
 
-            <fieldset class="settings-section provider-section">
+            <fieldset class="settings-section provider-section" id="profileProviderSection">
               <legend>Moteur IA</legend>
               <p>Choisis une connexion locale ou une clé API. OpenApply indique clairement ce qui est prêt sur cet appareil.</p>
               <div class="provider-options" id="providerOptions"></div>
@@ -387,6 +434,15 @@
         </div>
 
         <form id="jobForm" novalidate>
+          <details class="application-options">
+            <summary>
+              <span>
+                <strong>Options d’adaptation</strong>
+                <small>Détection automatique du domaine, du contrat et de la langue</small>
+              </span>
+              <span aria-hidden="true">⌄</span>
+            </summary>
+          <div class="application-options-grid">
           <fieldset class="field-group">
             <legend>Domaine de la candidature</legend>
             <div class="segmented-control category-control" id="categoryControl"></div>
@@ -425,7 +481,7 @@
               </label>
               <label>
                 <input type="radio" name="language" value="en" />
-                <span>English</span>
+                <span>Anglais</span>
               </label>
             </div>
             <p class="field-help" id="languageHelp">Auto suit la langue dominante de l’offre. Le CV FR ou EN sert aussi bien au CDI qu’à l’alternance.</p>
@@ -456,6 +512,8 @@
             </div>
             <p class="draft-save-status" id="draftSaveStatus" aria-live="polite">Le brouillon est sauvegardé automatiquement sur cet appareil.</p>
           </fieldset>
+          </div>
+          </details>
 
           <section class="field-group source-composer" id="sourceComposer" aria-labelledby="sourceComposerTitle">
             <div class="composer-heading">
@@ -478,7 +536,7 @@
                 <span class="add-offer-label">Ajouter un poste</span>
               </button>
 
-              <div class="source-secondary-actions">
+              <div class="source-secondary-actions" hidden>
                 <button class="source-mode-button" id="bulkImportButton" type="button">Importer une liste de liens</button>
               </div>
 
@@ -603,13 +661,13 @@
               <strong id="progressPercent">0 %</strong>
             </div>
           </div>
-          <div class="progress-track" aria-hidden="true"><span id="progressBar"></span></div>
+          <div class="progress-track" id="progressTrack" role="progressbar" aria-label="Progression de la candidature" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><span id="progressBar"></span></div>
           <p class="process-metadata" id="processMetadata"></p>
           <ol class="steps" aria-label="Étapes du traitement">
             <li data-step="analyzing"><span>1</span>Analyse</li>
             <li data-step="review"><span>2</span>Validation</li>
             <li data-step="drafting"><span>3</span>Adaptation</li>
-            <li data-step="verifying"><span>4</span>LibreOffice</li>
+            <li data-step="verifying"><span>4</span>Mise en page</li>
             <li data-step="completed"><span>5</span>Fichiers</li>
           </ol>
           <section class="recovery-panel" id="recoveryPanel" hidden aria-labelledby="recoveryTitle">
@@ -676,8 +734,8 @@
         <section class="bundle-results" id="bundleResults" aria-labelledby="bundleResultsTitle" hidden>
           <header class="bundle-results-header">
             <div>
-              <p class="review-status" id="bundleResultsStatus">Bundle en cours</p>
-              <h3 id="bundleResultsTitle">Candidatures du bundle</h3>
+              <p class="review-status" id="bundleResultsStatus">Lot en cours</p>
+              <h3 id="bundleResultsTitle" tabindex="-1">Candidatures du lot</h3>
             </div>
             <div class="bundle-header-actions">
               <button class="secondary-button compact" id="bundleRetryFailuresButton" type="button" hidden>Relancer les échecs</button>
@@ -696,7 +754,7 @@
           <div class="bundle-result-list" id="bundleResultList"></div>
         </section>
 
-        <footer class="result-bar" id="resultBar" hidden>
+        <footer class="result-bar" id="resultBar" tabindex="-1" aria-live="polite" hidden>
           <div class="result-copy">
             <span class="success-mark" aria-hidden="true">
               <svg viewBox="0 0 24 24" focusable="false"><path d="m6.5 12.5 3.4 3.4 7.6-8" /></svg>

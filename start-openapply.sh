@@ -26,17 +26,8 @@ done
 if [ -z "${OPENAPPLY_NODE}" ]; then
   echo "Node.js 20 ou plus récent est nécessaire pour lancer OpenApply."
   echo "Installation : https://nodejs.org/"
-  printf "Appuie sur Entrée pour fermer..."
-  read -r _answer
   exit 1
 fi
 
 cd "${APP_ROOT}" || exit 1
-"${OPENAPPLY_NODE}" scripts/start.mjs
-OPENAPPLY_STATUS=$?
-
-if [ "${OPENAPPLY_STATUS}" -ne 0 ]; then
-  printf "Appuie sur Entrée pour fermer..."
-  read -r _answer
-fi
-exit "${OPENAPPLY_STATUS}"
+exec "${OPENAPPLY_NODE}" scripts/start.mjs "$@"

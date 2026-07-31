@@ -9,9 +9,13 @@
     "node": ">=20"
   },
   "scripts": {
-    "start": "node app/server.mjs",
+    "setup": "node scripts/setup.mjs",
+    "start": "node scripts/start.mjs",
+    "start:server": "node app/server.mjs",
     "doctor": "node app/doctor.mjs",
+    "doctor:json": "node app/doctor.mjs --json",
     "privacy:check": "node scripts/privacy-check.mjs",
-    "check": "npm run privacy:check && node --check app/extension-pack.mjs && node --check app/antigravity-provider.mjs && node --check app/doctor.mjs && node --check app/job-analyzer-ai.mjs && node --check app/job-classifier.mjs && node --check app/job-sourcer.mjs && node --check app/offer-source.mjs && node --check app/ollama-provider.mjs && node --check app/platform.mjs && node --check app/provider-usage.mjs && node --check app/server.mjs && node --check app/public/app.js && node --check scripts/privacy-check.mjs && node --check .agents/skills/classify-job/scripts/classify-job.mjs && node test/link-import.test.mjs && node test/antigravity-provider.test.mjs && node test/job-classifier.test.mjs && node test/job-sourcer.test.mjs && node test/offer-source.test.mjs && node test/ollama-provider.test.mjs && node test/platform.test.mjs && node test/provider-usage.test.mjs"
+    "test": "npm run check",
+    "check": "npm run privacy:check && node --check app/extension-pack.mjs && node --check app/antigravity-provider.mjs && node --check app/backend-guards.mjs && node --check app/doctor.mjs && node --check app/job-analyzer-ai.mjs && node --check app/job-classifier.mjs && node --check app/job-sourcer.mjs && node --check app/offer-source.mjs && node --check app/ollama-provider.mjs && node --check app/platform.mjs && node --check app/provider-usage.mjs && node --check app/server.mjs && node --check app/public/app.js && node --check scripts/privacy-check.mjs && node --check scripts/setup.mjs && node --check scripts/start.mjs && node --check .agents/skills/classify-job/scripts/classify-job.mjs && node test/frontend-contract.test.mjs && node test/link-import.test.mjs && node test/antigravity-provider.test.mjs && node test/backend-guards.test.mjs && node test/doctor.test.mjs && node test/job-classifier.test.mjs && node test/job-sourcer.test.mjs && node test/offer-source.test.mjs && node test/ollama-provider.test.mjs && node test/platform.test.mjs && node test/provider-usage.test.mjs && node test/start.test.mjs"
   }
 }
